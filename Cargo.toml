@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+cairo-rs = "0.18"
 gtk4 = { version = "0.7", package = "gtk4" }
 
 tokio = { version = "1.37", features = ["rt-multi-thread", "macros", "time"] }
@@ -15,6 +16,8 @@ serde_json = "1.0"
 ffmpeg-next = { version = "6.0", features = ["build"] }
 webrtc = { path = "third_party/webrtc" }
 
+bytes = "1"
+num_cpus = "1"
 anyhow = "1.0"
 thiserror = "1.0"
 log = "0.4"

@@ -3,12 +3,14 @@ mod archive_loop;
 mod archive_protocol;
 mod config;
 mod ui;
+mod video_decoder;
 mod webrtc_client;
 mod webrtc_offer;
 
 use anyhow::Result;
 use app_state::ArchiveState;
 use config::AppConfig;
+use video_decoder::SharedFrame;
 use gtk4::prelude::*;
 use gtk4::Application;
 use std::sync::Arc;
@@ -22,6 +24,10 @@ fn main() -> Result<()> {
     let config = AppConfig::load().unwrap_or_default();
     let state = Arc::new(ArchiveState::default());
     let state_for_thread = Arc::clone(&state);
+    let shared_frame: SharedFrame = Arc::new(std::sync::Mutex::new(None));
+    let shared_frame_for_thread = Arc::clone(&shared_frame);
+    let (frame_updated_tx, frame_updated_rx) = std::sync::mpsc::sync_channel(0);
+    let frame_updated_rx = Arc::new(std::sync::Mutex::new(Some(frame_updated_rx)));
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
     let cmd_tx_ui = cmd_tx.clone();
 
@@ -42,7 +48,7 @@ fn main() -> Result<()> {
         rt.block_on(async move {
             let server_host_opt = webrtc_client::host_from_webrtc_url(&webrtc_url);
             let server_host = server_host_opt.as_deref();
-            let built = match webrtc_offer::build_offer_h264_h265(server_host, &ice_servers).await {
+            let built = match webrtc_offer::build_offer_h264_h265(server_host, &ice_servers, shared_frame_for_thread, frame_updated_tx).await {
                 Ok(built) => built,
                 Err(err) => {
                     log::error!("Failed to build WebRTC offer: {:?}", err);
@@ -187,7 +193,15 @@ fn main() -> Result<()> {
     );
 
     app.connect_activate(move |app| {
-        let win = MainWindow::new(app, config.clone(), Arc::clone(&state), cmd_tx_ui.clone());
+        let rx = frame_updated_rx.lock().unwrap().take().unwrap();
+        let win = MainWindow::new(
+            app,
+            config.clone(),
+            Arc::clone(&state),
+            cmd_tx_ui.clone(),
+            Arc::clone(&shared_frame),
+            rx,
+        );
         win.present();
     });
 

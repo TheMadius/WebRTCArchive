@@ -21,6 +21,8 @@ use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParam
 use webrtc::rtp_transceiver::{RTCPFeedback, RTCRtpTransceiverInit};
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 
+use crate::video_decoder::{SharedFrame, VideoDecoder};
+
 pub struct BuiltOffer {
     pub pc: Arc<webrtc::peer_connection::RTCPeerConnection>,
     pub offer_sdp: String,
@@ -31,9 +33,13 @@ pub struct BuiltOffer {
 }
 
 /// Строит offer под SFU: один локальный кандидат (IP сервера), без задержки host-пары — быстрый выход из Checking в Connected и DTLS.
+/// `shared_frame`: буфер последнего декодированного кадра для отрисовки в UI.
+/// `frame_updated`: при каждом новом кадре отправляется () для немедленной перерисовки (без привязки ко времени).
 pub async fn build_offer_h264_h265(
     server_host: Option<&str>,
     ice_servers: &[String],
+    shared_frame: SharedFrame,
+    frame_updated: std::sync::mpsc::SyncSender<()>,
 ) -> Result<BuiltOffer> {
     let mut m = MediaEngine::default();
 
@@ -255,14 +261,75 @@ pub async fn build_offer_h264_h265(
         Box::pin(async {})
     }));
 
-    // Отладка: треки и datachannel.
-    pc.on_track(Box::new(|track, _receiver, _transceiver| {
+    // Параллельный конвейер: поток чтения RTP и поток декодирования работают независимо.
+    let frame_for_track = shared_frame.clone();
+    let frame_updated_tx = frame_updated;
+    pc.on_track(Box::new(move |track, _receiver, _transceiver| {
         log::info!(
-            "Remote track arrived: kind={:?}, codec={:?}, ssrc={}",
+            "[video] Remote track arrived: kind={:?}, codec={:?}, ssrc={}",
             track.kind(),
             track.codec(),
             track.ssrc()
         );
+        if track.kind() != RTPCodecType::Video {
+            return Box::pin(async {});
+        }
+        let frame_buf = frame_for_track.clone();
+        let notify_new_frame = frame_updated_tx.clone();
+        let track = Arc::clone(&track);
+
+        // Буфер 8 пакетов: при кратковременных задержках декодера читатель не блокируется сразу — меньше «подвисаний».
+        let (payload_tx, payload_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
+
+        // Поток 1: только чтение RTP с трека, отправка payload в канал.
+        let track_reader = Arc::clone(&track);
+        let payload_tx_reader = payload_tx.clone();
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    log::error!("[video] Failed to create runtime for reader: {:?}", e);
+                    return;
+                }
+            };
+            log::info!("[video] RTP reader loop started for track ssrc={}", track_reader.ssrc());
+            rt.block_on(async {
+                loop {
+                    let (pkt, _attrs) = match track_reader.read_rtp().await {
+                        Ok(x) => x,
+                        Err(_) => break,
+                    };
+                    if payload_tx_reader.send(pkt.payload.to_vec()).is_err() {
+                        break;
+                    }
+                }
+            });
+            log::info!("[video] RTP reader loop ended");
+        });
+
+        // Поток 2: приём payload из канала, декодирование, запись кадра в shared_frame.
+        std::thread::spawn(move || {
+            let mut decoder = match VideoDecoder::new() {
+                Ok(d) => d,
+                Err(e) => {
+                    log::error!("[video] Failed to create decoder: {:?}", e);
+                    return;
+                }
+            };
+            log::info!("[video] Decode loop started for track ssrc={}", track.ssrc());
+            while let Ok(payload) = payload_rx.recv() {
+                if let Ok(Some(decoded)) = decoder.push_payload(&payload) {
+                    if let Ok(mut guard) = frame_buf.lock() {
+                        *guard = Some(decoded);
+                        let _ = notify_new_frame.send(());
+                    }
+                }
+            }
+            log::info!("[video] Decode loop ended for track ssrc={}", track.ssrc());
+        });
         Box::pin(async {})
     }));
 

@@ -3725,10 +3725,13 @@ name = "webrtc_archive_player"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
+ "cairo-rs",
  "env_logger",
  "ffmpeg-next",
  "gtk4",
  "log",
+ "num_cpus",
  "reqwest",
  "serde",
  "serde_json",

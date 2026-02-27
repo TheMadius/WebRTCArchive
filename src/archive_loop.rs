@@ -11,7 +11,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use webrtc::data_channel::RTCDataChannel;
 
-const FRAGMENT_DURATION_MS: i64 = 60_000; // 1 минута
+// Длительность одного фрагмента архива (10 секунд).
+const FRAGMENT_DURATION_MS: i64 = 10_000;
 const REQUEST_NEXT_FRAGMENT_BEFORE_END_MS: u64 = 2_000; // запрашивать следующий фрагмент за 2 сек до конца
 
 /// Запускает цикл: при открытии Data Channel отправляет get_ranges,
@@ -55,11 +56,7 @@ pub async fn run_archive_loop(
                             log::error!("play_stream send error: {:?}", e);
                         }
                         log::info!("PlayFrom {} (with key frame), play_stream sent", timestamp_ms);
-                        schedule_next_fragment(
-                            Arc::clone(&dc),
-                            Arc::clone(&session_id),
-                            timestamp_ms + FRAGMENT_DURATION_MS as u64,
-                        );
+                        // Следующий фрагмент планируем только по ответу archive_fragment, чтобы не дублировать запрос.
                     }
                     ArchiveCommand::Stop => {
                         let req = stop_stream();
