@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_HEVC};
 use webrtc::api::setting_engine::SettingEngine;
@@ -22,6 +24,10 @@ use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirecti
 pub struct BuiltOffer {
     pub pc: Arc<webrtc::peer_connection::RTCPeerConnection>,
     pub offer_sdp: String,
+    /// Data Channel "data" для команд архива (get_ranges, play_stream, get_archive_fragment и т.д.).
+    pub data_channel: Arc<webrtc::data_channel::RTCDataChannel>,
+    /// Приёмник сообщений с DC — обработчик вешается при создании канала, чтобы не пропустить ответы.
+    pub message_rx: mpsc::Receiver<String>,
 }
 
 /// Строит offer под SFU: один локальный кандидат (IP сервера), без задержки host-пары — быстрый выход из Checking в Connected и DTLS.
@@ -260,12 +266,46 @@ pub async fn build_offer_h264_h265(
         Box::pin(async {})
     }));
 
-    pc.on_data_channel(Box::new(|dc| {
+    // Сообщения из DC в архив-луп: синхронная отправка в callback (не зависят от опроса Future),
+    // поток-мост пересылает из std::mpsc в tokio::mpsc.
+    let (sync_tx, sync_rx) = std::sync::mpsc::sync_channel::<String>(64);
+    let (tokio_tx, message_rx) = mpsc::channel(64);
+    let sync_tx_remote = sync_tx.clone();
+    let tokio_tx_for_bridge = tokio_tx.clone();
+
+    thread::spawn(move || {
+        while let Ok(s) = sync_rx.recv() {
+            log::info!("[DC] bridge: forwarding to archive_loop ({} bytes)", s.len());
+            if let Err(e) = tokio_tx_for_bridge.blocking_send(s) {
+                log::warn!("[DC] bridge: send to loop failed: {:?}", e);
+                break;
+            }
+        }
+        log::info!("[DC] bridge thread exiting");
+    });
+
+    // Сервер может открыть свой Data Channel (в answer) и слать ответы по нему — подписываемся.
+    pc.on_data_channel(Box::new(move |dc| {
         log::info!(
-            "DataChannel from remote: label={} id={:?}",
+            "[DC] DataChannel from REMOTE: label={} id={:?}, registering on_message",
             dc.label(),
             dc.id()
         );
+        let tx = sync_tx_remote.clone();
+        dc.on_message(Box::new(move |msg| {
+            let tx = tx.clone();
+            if msg.is_string {
+                if let Ok(s) = String::from_utf8(msg.data.to_vec()) {
+                    log::info!("[DC] message on REMOTE channel ({} bytes): {}", s.len(), s.trim().chars().take(120).collect::<String>());
+                    if let Err(e) = tx.send(s) {
+                        log::warn!("[DC] REMOTE channel send to bridge: {:?}", e);
+                    }
+                }
+            } else {
+                log::info!("[DC] binary message on REMOTE channel ({} bytes)", msg.data.len());
+            }
+            Box::pin(async {})
+        }));
         Box::pin(async {})
     }));
 
@@ -279,8 +319,44 @@ pub async fn build_offer_h264_h265(
     )
     .await?;
 
-    // Канал данных нужен для команд (get_ranges / play_stream / ...).
-    let _dc = pc.create_data_channel("data", None).await?;
+    // Канал данных: on_message ставим СРАЗУ при создании, иначе в webrtc handle_open сначала
+    // спавнит do_open() (наш on_open в отдельной задаче), потом сразу спавнит read_loop — данные
+    // могут прийти и вызваться handler до того, как on_open успеет установить on_message.
+    let data_channel = pc.create_data_channel("data", None).await?;
+    log::info!("[DC] our DataChannel created: label={}", data_channel.label());
+    {
+        let sync_tx_our = sync_tx.clone();
+        data_channel.on_message(Box::new(move |msg| {
+            log::info!("on_message");
+            let tx = sync_tx_our.clone();
+            if msg.is_string {
+                if let Ok(s) = String::from_utf8(msg.data.to_vec()) {
+                    log::info!("[DC] message on OUR channel ({} bytes): {}", s.len(), s.trim().chars().take(120).collect::<String>());
+                    if let Err(e) = tx.send(s) {
+                        log::warn!("[DC] OUR channel send to bridge: {:?}", e);
+                    }
+                }
+            } else {
+                log::info!("[DC] binary message on OUR channel ({} bytes)", msg.data.len());
+            }
+            Box::pin(async {})
+        }));
+    }
+    {
+        let dc_send = data_channel.clone();
+        data_channel.on_open(Box::new(move || {
+            log::info!("[DC] our channel OPEN, sending get_ranges");
+            tokio::spawn(async move {
+                let req = crate::archive_protocol::get_ranges(None, None);
+                if let Ok(json) = serde_json::to_string(&req) {
+                    if let Err(e) = dc_send.send_text(json).await {
+                        log::error!("[DC] get_ranges send failed: {:?}", e);
+                    }
+                }
+            });
+            Box::pin(async {})
+        }));
+    }
 
     let offer: RTCSessionDescription = pc.create_offer(None).await?;
 
@@ -312,6 +388,8 @@ pub async fn build_offer_h264_h265(
     Ok(BuiltOffer {
         pc,
         offer_sdp,
+        data_channel,
+        message_rx,
     })
 }
 

@@ -22,4 +22,5 @@ env_logger = "0.11"
 
 [patch.crates-io]
 webrtc-ice = { path = "third_party/webrtc-ice" }
+webrtc-data = { path = "third_party/webrtc-data" }
 

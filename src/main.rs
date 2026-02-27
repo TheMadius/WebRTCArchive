@@ -1,12 +1,18 @@
+mod app_state;
+mod archive_loop;
+mod archive_protocol;
 mod config;
 mod ui;
 mod webrtc_client;
 mod webrtc_offer;
 
 use anyhow::Result;
+use app_state::ArchiveState;
 use config::AppConfig;
 use gtk4::prelude::*;
 use gtk4::Application;
+use std::sync::Arc;
+use tokio::sync::mpsc;
 use ui::MainWindow;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
@@ -14,6 +20,10 @@ fn main() -> Result<()> {
     env_logger::init();
 
     let config = AppConfig::load().unwrap_or_default();
+    let state = Arc::new(ArchiveState::default());
+    let state_for_thread = Arc::clone(&state);
+    let (cmd_tx, cmd_rx) = mpsc::channel(32);
+    let cmd_tx_ui = cmd_tx.clone();
 
     // WebRTC offer/answer делаем в отдельном потоке, чтобы не блокировать GTK main loop.
     let webrtc_url = config.webrtc_url.clone();
@@ -156,8 +166,16 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Держим runtime живым, иначе цикл ICE (tokio::spawn внутри webrtc) завершится
-            // и повторные STUN binding request перестанут уходить. Ждём бесконечно.
+            // Цикл архива: get_ranges при открытии DC, обработка команд PlayFrom и пополнение буфера.
+            let message_rx = built.message_rx;
+            tokio::spawn(archive_loop::run_archive_loop(
+                built.data_channel,
+                state_for_thread,
+                cmd_rx,
+                message_rx,
+            ));
+
+            // Держим runtime живым.
             let (_tx, rx) = tokio::sync::oneshot::channel::<()>();
             let _ = rx.await;
         });
@@ -169,7 +187,7 @@ fn main() -> Result<()> {
     );
 
     app.connect_activate(move |app| {
-        let win = MainWindow::new(app, config.clone());
+        let win = MainWindow::new(app, config.clone(), Arc::clone(&state), cmd_tx_ui.clone());
         win.present();
     });
 
