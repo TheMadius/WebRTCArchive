@@ -296,18 +296,24 @@ pub async fn build_offer_h264_h265(
                 }
             };
             log::info!("[video] RTP reader loop started for track ssrc={}", track_reader.ssrc());
+            let mut rtp_packets: u64 = 0;
             rt.block_on(async {
                 loop {
                     let (pkt, _attrs) = match track_reader.read_rtp().await {
                         Ok(x) => x,
                         Err(_) => break,
                     };
+                    rtp_packets += 1;
+                    if rtp_packets <= 3 || rtp_packets % 300 == 0 {
+                        log::info!("[video] RTP reader: packet #{} ({} bytes) -> channel", rtp_packets, pkt.payload.len());
+                    }
                     if payload_tx_reader.send(pkt.payload.to_vec()).is_err() {
+                        log::info!("[video] RTP reader loop ended after {} packets (channel closed)", rtp_packets);
                         break;
                     }
                 }
             });
-            log::info!("[video] RTP reader loop ended");
+            log::info!("[video] RTP reader loop ended, total packets received={}", rtp_packets);
         });
 
         // Поток 2: приём payload из канала, декодирование, запись кадра в shared_frame.
@@ -320,15 +326,53 @@ pub async fn build_offer_h264_h265(
                 }
             };
             log::info!("[video] Decode loop started for track ssrc={}", track.ssrc());
+            let mut frame_count: u64 = 0;
+            let mut frames_in_this_sec: u64 = 0;
+            let mut last_sec = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
             while let Ok(payload) = payload_rx.recv() {
                 if let Ok(Some(decoded)) = decoder.push_payload(&payload) {
+                    frame_count += 1;
+                    frames_in_this_sec += 1;
+                    let w = decoded.width;
+                    let h = decoded.height;
+                    log::debug!(
+                        "[video] frame decoded #{} {}x{} (written to SharedFrame)",
+                        frame_count, w, h
+                    );
+                    if frame_count <= 5 || frame_count % 30 == 0 {
+                        log::info!(
+                            "[video] decoded frame #{} {}x{} (total decoded so far)",
+                            frame_count, w, h
+                        );
+                    }
+                    let now_sec = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    if now_sec > last_sec {
+                        log::info!(
+                            "[video] decode rate: {} frames in last second (total #{})",
+                            frames_in_this_sec, frame_count
+                        );
+                        last_sec = now_sec;
+                        frames_in_this_sec = 0;
+                    }
                     if let Ok(mut guard) = frame_buf.lock() {
                         *guard = Some(decoded);
-                        let _ = notify_new_frame.send(());
+                        drop(guard);
+                        // try_send: не блокируем декодер на ожидании UI; при переполнении канала просто пропускаем уведомление.
+                        if notify_new_frame.try_send(()).is_err() {
+                            log::debug!("[video] frame #{}: frame_updated channel full, skip notify", frame_count);
+                        }
+                    } else {
+                        log::warn!("[video] frame #{}: failed to lock SharedFrame", frame_count);
                     }
                 }
             }
-            log::info!("[video] Decode loop ended for track ssrc={}", track.ssrc());
+            log::info!("[video] Decode loop ended for track ssrc={}, total frames decoded={}", track.ssrc(), frame_count);
         });
         Box::pin(async {})
     }));
@@ -342,7 +386,9 @@ pub async fn build_offer_h264_h265(
 
     thread::spawn(move || {
         while let Ok(s) = sync_rx.recv() {
-            log::info!("[DC] bridge: forwarding to archive_loop ({} bytes)", s.len());
+            if !s.contains("\"type\":\"meta\"") {
+                log::info!("[DC] bridge: forwarding to archive_loop ({} bytes)", s.len());
+            }
             if let Err(e) = tokio_tx_for_bridge.blocking_send(s) {
                 log::warn!("[DC] bridge: send to loop failed: {:?}", e);
                 break;
@@ -363,7 +409,9 @@ pub async fn build_offer_h264_h265(
             let tx = tx.clone();
             if msg.is_string {
                 if let Ok(s) = String::from_utf8(msg.data.to_vec()) {
-                    log::info!("[DC] message on REMOTE channel ({} bytes): {}", s.len(), s.trim().chars().take(120).collect::<String>());
+                    if !s.contains("\"type\":\"meta\"") {
+                        log::info!("[DC] message on REMOTE channel ({} bytes): {}", s.len(), s.trim().chars().take(120).collect::<String>());
+                    }
                     if let Err(e) = tx.send(s) {
                         log::warn!("[DC] REMOTE channel send to bridge: {:?}", e);
                     }

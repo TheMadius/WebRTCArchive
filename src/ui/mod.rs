@@ -33,15 +33,21 @@ impl MainWindow {
 
         let frame_for_draw = Arc::clone(&shared_frame);
         video_area.set_draw_func(move |_area, cr, width, height| {
-            let guard = match frame_for_draw.lock() {
-                Ok(g) => g,
-                Err(_) => return,
+            // Копируем кадр под замком и сразу отпускаем — конвертация и отрисовка без блокировки,
+            // чтобы декодер мог писать новые кадры и воспроизведение шло в реальном времени.
+            let frame = {
+                let guard = match frame_for_draw.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                guard.clone()
             };
-            let Some(ref frame) = *guard else {
+            let Some(ref frame) = frame else {
                 cr.set_source_rgb(0.1, 0.1, 0.1);
                 cr.paint().ok();
                 return;
             };
+            log::debug!("[video] UI draw: frame {}x{}", frame.width, frame.height);
             let w = frame.width as i32;
             let h = frame.height as i32;
             let size_rgb = (w as usize).saturating_mul(h as usize).saturating_mul(3);

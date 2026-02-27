@@ -67,6 +67,10 @@ pub async fn run_archive_loop(
                 }
             }
             Some(json_str) = msg_rx.recv() => {
+                // Мета приходит на каждый кадр по DC — не парсим и не логируем, чтобы не нагружать.
+                if json_str.contains("\"type\":\"meta\"") {
+                    continue;
+                }
                 log::info!(
                     "[DC] archive_loop: received message len={}, preview={}",
                     json_str.len(),

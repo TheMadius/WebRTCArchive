@@ -26,7 +26,8 @@ fn main() -> Result<()> {
     let state_for_thread = Arc::clone(&state);
     let shared_frame: SharedFrame = Arc::new(std::sync::Mutex::new(None));
     let shared_frame_for_thread = Arc::clone(&shared_frame);
-    let (frame_updated_tx, frame_updated_rx) = std::sync::mpsc::sync_channel(0);
+    // Ёмкость 1: декодер делает try_send и не блокируется на UI; лишние уведомления отбрасываются.
+    let (frame_updated_tx, frame_updated_rx) = std::sync::mpsc::sync_channel(1);
     let frame_updated_rx = Arc::new(std::sync::Mutex::new(Some(frame_updated_rx)));
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
     let cmd_tx_ui = cmd_tx.clone();
