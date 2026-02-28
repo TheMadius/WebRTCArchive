@@ -53,6 +53,8 @@ mod palette {
     // Иллюзорный маркер при наведении — полупрозрачный светлый
     pub const HOVER_MARKER: (f64, f64, f64, f64) = (1.0, 1.0, 1.0, 0.45);
 }
+/// Цвет фона таймлайна в формате CSS (для подложки времени и т.п.)
+pub const TIMELINE_BG_CSS: &str = "#18181b";
 
 fn ms_to_datetime_utc(ms: u64) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp_millis(ms as i64)
