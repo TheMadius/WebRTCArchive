@@ -254,16 +254,11 @@ pub fn new_timeline(
             let pos_in_view = draw_pos_ms >= view_start && draw_pos_ms <= view_end;
             if end_ms > start_ms && pos_in_view {
                 let px = timestamp_to_x(draw_pos_ms, track_left, track_width, view_start, view_end);
-                // Сначала рисуем плейхед, чтобы подпись времени поверх него не перекрывалась
+                // Плейхед — вертикальная полоска только по высоте полосы (не выходит за её пределы)
                 cr.set_source_rgb(palette::PLAYHEAD.0, palette::PLAYHEAD.1, palette::PLAYHEAD.2);
                 cr.rectangle(px - PLAYHEAD_WIDTH / 2.0, bar_top, PLAYHEAD_WIDTH, BAR_HEIGHT);
                 cr.fill().ok();
-                cr.move_to(px, bar_top - PLAYHEAD_TRIANGLE_H);
-                cr.line_to(px - 6.0, bar_top);
-                cr.line_to(px + 6.0, bar_top);
-                cr.close_path();
-                cr.fill().ok();
-                // Подпись времени над плейхедом: рисуем поверх маркера, с запасом по высоте
+                // Подпись времени над полосой
                 let time_str = format_playhead_label(draw_pos_ms);
                 cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
                 cr.set_font_size(11.0);
@@ -274,7 +269,7 @@ pub fn new_timeline(
                     let rw = te.width() + 2.0 * pad_x;
                     let rh = te.height() + 2.0 * pad_y;
                     let rx = (px - rw / 2.0).clamp(MARGIN, (w - MARGIN - rw).max(MARGIN));
-                    let ry = (bar_top - PLAYHEAD_TRIANGLE_H - rh - 14.0).max(MARGIN);
+                    let ry = (bar_top - rh - 18.0).max(MARGIN);
                     let radius = 6.0;
                     let pi = std::f64::consts::PI;
                     cr.set_source_rgb(palette::BG.0, palette::BG.1, palette::BG.2);
