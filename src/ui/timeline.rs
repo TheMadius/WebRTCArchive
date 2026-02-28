@@ -50,6 +50,8 @@ mod palette {
     pub const LABEL: (f64, f64, f64) = (0.631, 0.631, 0.667);
     // Ползунок воспроизведения — тёплый акцент (amber-500), хорошо заметен
     pub const PLAYHEAD: (f64, f64, f64) = (0.965, 0.620, 0.043);
+    // Иллюзорный маркер при наведении — полупрозрачный светлый
+    pub const HOVER_MARKER: (f64, f64, f64, f64) = (1.0, 1.0, 1.0, 0.45);
 }
 
 fn ms_to_datetime_utc(ms: u64) -> Option<DateTime<Utc>> {
@@ -135,10 +137,12 @@ pub fn new_timeline(
 
     let view_state = Arc::new(Mutex::new(ViewState::default()));
     let last_mouse_x = Arc::new(Mutex::new(0.0f64));
+    let hover_x: Arc<Mutex<Option<f64>>> = Arc::new(Mutex::new(None));
 
     area.set_draw_func({
         let state_draw = Arc::clone(&state);
         let view_state_draw = Arc::clone(&view_state);
+        let hover_x_draw = Arc::clone(&hover_x);
         move |_, cr, width, height| {
             let w = width as f64;
             let h = height as f64;
@@ -245,6 +249,29 @@ pub fn new_timeline(
                 cr.close_path();
                 cr.fill().ok();
             }
+
+            // Иллюзорный маркер при наведении на полосу
+            if let Ok(guard) = hover_x_draw.lock() {
+                if let Some(x) = *guard {
+                    let hx = x.clamp(track_left, track_left + track_width);
+                    cr.set_source_rgba(
+                        palette::HOVER_MARKER.0,
+                        palette::HOVER_MARKER.1,
+                        palette::HOVER_MARKER.2,
+                        palette::HOVER_MARKER.3,
+                    );
+                    cr.set_line_width(1.5);
+                    cr.move_to(hx, bar_top);
+                    cr.line_to(hx, bar_bottom);
+                    cr.stroke().ok();
+                    // Небольшой треугольник над полосой (как у ползунка, но тоньше)
+                    cr.move_to(hx, bar_top - TICK_HEIGHT_SHORT);
+                    cr.line_to(hx - 4.0, bar_top);
+                    cr.line_to(hx + 4.0, bar_top);
+                    cr.close_path();
+                    cr.fill().ok();
+                }
+            }
         }
     });
 
@@ -283,10 +310,12 @@ pub fn new_timeline(
     });
     area.add_controller(click);
 
-    // Наведение: подсказка с временем и курсор-указатель над полосой; сохраняем x для зума под курсором
+    // Наведение: подсказка с временем, курсор-указатель и иллюзорный маркер над полосой
     let state_motion = Arc::clone(&state);
     let view_state_motion = Arc::clone(&view_state);
     let last_mouse_x_motion = Arc::clone(&last_mouse_x);
+    let hover_x_motion = Arc::clone(&hover_x);
+    let area_motion = area.clone();
     let motion = EventControllerMotion::new();
     motion.connect_motion(move |controller, x, y| {
         let widget = controller.widget();
@@ -299,6 +328,10 @@ pub fn new_timeline(
         let track_width = (w - 2.0 * MARGIN).max(1.0);
 
         if y >= bar_top && y <= bar_top + BAR_HEIGHT && track_width > 0.0 {
+            if let Ok(mut h) = hover_x_motion.lock() {
+                *h = Some(x);
+            }
+            area_motion.queue_draw();
             let local_x = (x - track_left).clamp(0.0, track_width);
             let ranges = state_motion.get_ranges();
             if ranges.is_empty() {
@@ -324,6 +357,12 @@ pub fn new_timeline(
                 widget.set_cursor(None);
             }
         } else {
+            if let Ok(mut h) = hover_x_motion.lock() {
+                if h.is_some() {
+                    *h = None;
+                    area_motion.queue_draw();
+                }
+            }
             widget.set_tooltip_text(None);
             if let Some(ref c) = gtk4::gdk::Cursor::from_name("default", None) {
                 widget.set_cursor(Some(c));
@@ -332,8 +371,16 @@ pub fn new_timeline(
             }
         }
     });
+    let hover_x_leave = Arc::clone(&hover_x);
+    let area_leave = area.clone();
     motion.connect_leave(move |controller| {
         let widget = controller.widget();
+        if let Ok(mut h) = hover_x_leave.lock() {
+            if h.is_some() {
+                *h = None;
+                area_leave.queue_draw();
+            }
+        }
         widget.set_tooltip_text(None);
         if let Some(ref c) = gtk4::gdk::Cursor::from_name("default", None) {
             widget.set_cursor(Some(c));
