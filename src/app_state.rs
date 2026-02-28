@@ -2,6 +2,7 @@
 
 use crate::archive_protocol::TimeRange;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Команды от UI к WebRTC-потоку.
 #[derive(Debug, Clone)]
@@ -22,9 +23,13 @@ pub struct ArchiveState {
     pub playback_start_ms: AtomicU64,
     /// Конец текущего фрагмента (мс).
     pub playback_end_ms: AtomicU64,
-    /// Текущая позиция воспроизведения (мс), обновляется из RTP. Для движения ползунка на timeline.
+    /// Рекомендательная позиция из RTP (опционально для коррекции дрейфа).
     pub playback_position_ms: AtomicU64,
-    /// Поколение воспроизведения: увеличивается при каждом PlayFrom. RTP-читатель сбрасывает offset и обрабатывает как первое нажатие.
+    /// Момент в контенте (мс), с которого начали воспроизведение (при PlayFrom).
+    pub playback_content_start_ms: AtomicU64,
+    /// Момент по стенным часам (unix ms), когда начали воспроизведение.
+    pub playback_started_at_unix_ms: AtomicU64,
+    /// Поколение воспроизведения: увеличивается при каждом PlayFrom. RTP-читатель сбрасывает offset.
     pub playback_generation: AtomicU64,
     /// Timestamp, с которого запросили фрагмент при последнем PlayFrom (чтобы игнорировать устаревшие archive_fragment).
     pub last_play_from_requested_ms: AtomicU64,
@@ -39,6 +44,8 @@ impl Default for ArchiveState {
             playback_start_ms: AtomicU64::new(0),
             playback_end_ms: AtomicU64::new(0),
             playback_position_ms: AtomicU64::new(0),
+            playback_content_start_ms: AtomicU64::new(0),
+            playback_started_at_unix_ms: AtomicU64::new(0),
             playback_generation: AtomicU64::new(0),
             last_play_from_requested_ms: AtomicU64::new(0),
             timeline_dirty: AtomicBool::new(false),
@@ -76,8 +83,45 @@ impl ArchiveState {
         self.playback_end_ms.store(end_ms, Ordering::Relaxed);
     }
 
-    /// Устанавливает текущую позицию воспроизведения (вызывается из RTP-читателя по timestamp пакетов).
+    /// Устанавливает рекомендательную позицию из RTP (опционально для отображения/коррекции дрейфа).
     pub fn set_playback_position(&self, position_ms: u64) {
         self.playback_position_ms.store(position_ms, Ordering::Relaxed);
+    }
+
+    /// Привязка воспроизведения к стенным часам (вызывать при PlayFrom).
+    pub fn set_playback_wall_start(&self, content_start_ms: u64) {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.playback_content_start_ms.store(content_start_ms, Ordering::Relaxed);
+        self.playback_started_at_unix_ms.store(now_ms, Ordering::Relaxed);
+    }
+
+    /// Сбрасывает привязку к стенным часам (при Stop).
+    pub fn clear_playback_wall_start(&self) {
+        self.playback_started_at_unix_ms.store(0, Ordering::Relaxed);
+    }
+
+    /// Текущая позиция воспроизведения по стенным часам: content_start + (now - started_at), в границах [start, end].
+    pub fn current_playback_position_ms(&self) -> u64 {
+        let started_at = self.playback_started_at_unix_ms.load(Ordering::Relaxed);
+        if started_at == 0 {
+            return self.playback_position_ms.load(Ordering::Relaxed);
+        }
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let content_start = self.playback_content_start_ms.load(Ordering::Relaxed);
+        let start = self.playback_start_ms.load(Ordering::Relaxed);
+        let end = self.playback_end_ms.load(Ordering::Relaxed);
+        let elapsed = now_ms.saturating_sub(started_at);
+        let pos = content_start.saturating_add(elapsed);
+        if end > start {
+            pos.min(end).max(start)
+        } else {
+            pos
+        }
     }
 }

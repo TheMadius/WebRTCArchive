@@ -53,6 +53,7 @@ pub async fn run_archive_loop(
                         }
                         state.set_playback_span(timestamp_ms, timestamp_ms + FRAGMENT_DURATION_MS as u64);
                         state.set_playback_position(timestamp_ms);
+                        state.set_playback_wall_start(timestamp_ms);
                         state.last_play_from_requested_ms.store(timestamp_ms, Ordering::Relaxed);
                         state.next_playback_generation();
                         if let Err(e) = dc.send_text(serde_json::to_string(&play_stream()).unwrap()).await {
@@ -68,6 +69,7 @@ pub async fn run_archive_loop(
                         }
                         let start = state.playback_start_ms.load(Ordering::Relaxed);
                         state.set_playback_position(start);
+                        state.clear_playback_wall_start();
                     }
                 }
             }
@@ -109,10 +111,10 @@ pub async fn run_archive_loop(
                                         || (frag.start_time <= requested + margin_ms && frag.end_time >= requested.saturating_sub(margin_ms));
                                     if is_for_current_request {
                                         state.set_playback_span(frag.start_time, frag.end_time);
-                                        state.set_playback_position(frag.start_time);
                                         log::info!("[DC] archive_fragment: {} - {} (applied)", frag.start_time, frag.end_time);
                                         schedule_next_fragment(
                                             Arc::clone(&dc),
+                                            Arc::clone(&state),
                                             Arc::clone(&session_id),
                                             frag.end_time,
                                         );
@@ -141,13 +143,19 @@ pub async fn run_archive_loop(
     }
 }
 
-fn schedule_next_fragment(dc: Arc<RTCDataChannel>, session_id: Arc<AtomicU64>, next_start_ms: u64) {
+fn schedule_next_fragment(
+    dc: Arc<RTCDataChannel>,
+    state: Arc<ArchiveState>,
+    session_id: Arc<AtomicU64>,
+    next_start_ms: u64,
+) {
     let delay_ms = FRAGMENT_DURATION_MS as u64 - REQUEST_NEXT_FRAGMENT_BEFORE_END_MS;
     let delay = Duration::from_millis(delay_ms);
     let my_session = session_id.load(Ordering::SeqCst);
     tokio::spawn(async move {
         tokio::time::sleep(delay).await;
         if session_id.load(Ordering::SeqCst) != my_session {
+            log::debug!("schedule_next_fragment cancelled: session changed");
             return;
         }
         let req = get_archive_fragment(next_start_ms, FRAGMENT_DURATION_MS, false);
@@ -155,6 +163,11 @@ fn schedule_next_fragment(dc: Arc<RTCDataChannel>, session_id: Arc<AtomicU64>, n
             if let Err(e) = dc.send_text(json).await {
                 log::error!("get_archive_fragment (next) send error: {:?}", e);
             } else {
+                // Важно: обновляем ожидаемый timestamp последнего запроса, иначе последующие archive_fragment
+                // будут считаться "не для текущего PlayFrom" и цикл пополнения оборвётся.
+                state
+                    .last_play_from_requested_ms
+                    .store(next_start_ms, Ordering::Relaxed);
                 log::info!("Requested next fragment from {} (no key)", next_start_ms);
             }
         }

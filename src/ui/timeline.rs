@@ -241,10 +241,10 @@ pub fn new_timeline(
                 cr.fill().ok();
             }
 
-            // Ползунок воспроизведения (позиция из RTP timestamp с учётом разворота 32-bit)
+            // Ползунок воспроизведения: позиция по стенным часам (content_start + elapsed)
             let start_ms = state_draw.playback_start_ms.load(std::sync::atomic::Ordering::Relaxed);
             let end_ms = state_draw.playback_end_ms.load(std::sync::atomic::Ordering::Relaxed);
-            let position_ms = state_draw.playback_position_ms.load(std::sync::atomic::Ordering::Relaxed);
+            let position_ms = state_draw.current_playback_position_ms();
             let raw_pos = if position_ms > 0 { position_ms } else { start_ms };
             let draw_pos_ms = if end_ms > start_ms {
                 raw_pos.min(end_ms)

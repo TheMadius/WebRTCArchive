@@ -33,7 +33,7 @@ pub struct BuiltOffer {
     pub message_rx: mpsc::Receiver<String>,
 }
 
-/// Частота дискретизации RTP timestamp для H.264/HEVC (90 kHz).
+/// Частота RTP timestamp для H.264/HEVC (90 kHz). Сервер кладёт offset от начала дня (UTC0) в тиках этой частоты.
 const RTP_CLOCK_RATE_HZ: u64 = 90_000;
 
 /// Разворачивает 32-битный RTP timestamp с учётом переполнения (обнуления в середине потока).
@@ -55,7 +55,7 @@ fn unwrap_rtp_timestamp(raw_ts: u32, prev_raw: u32, prev_unwrapped: i64) -> i64 
 /// Строит offer под SFU: один локальный кандидат (IP сервера), без задержки host-пары — быстрый выход из Checking в Connected и DTLS.
 /// `shared_frame`: буфер последнего декодированного кадра для отрисовки в UI.
 /// `frame_updated`: при каждом новом кадре отправляется () для немедленной перерисовки (без привязки ко времени).
-/// `state`: для обновления playback_position_ms из RTP timestamp (движение ползунка на timeline).
+/// `state`: рекомендательная позиция из RTP пишется в playback_position_ms (основной таймлайн — по стенным часам).
 pub async fn build_offer_h264_h265(
     server_host: Option<&str>,
     ice_servers: &[String],
@@ -303,7 +303,7 @@ pub async fn build_offer_h264_h265(
         // Буфер 8 пакетов: при кратковременных задержках декодера читатель не блокируется сразу — меньше «подвисаний».
         let (payload_tx, payload_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
 
-        // Поток 1: чтение RTP, разворот timestamp (32-bit wrap), обновление playback_position_ms, отправка payload в канал.
+        // Поток 1: чтение RTP, разворот timestamp (32-bit wrap), рекомендательная позиция в state, отправка payload в канал.
         let track_reader = Arc::clone(&track);
         let payload_tx_reader = payload_tx.clone();
         let state_rtp = Arc::clone(&state);
@@ -332,29 +332,36 @@ pub async fn build_offer_h264_h265(
                         Err(_) => break,
                     };
                     rtp_packets += 1;
+                    // RTP timestamp = offset от начала дня (UTC0) в тиках 90 kHz (H.264). Используется только как рекомендация.
                     let raw_ts = pkt.header.timestamp;
                     let current_start = state_rtp.playback_start_ms.load(std::sync::atomic::Ordering::Relaxed);
+                    let current_end = state_rtp.playback_end_ms.load(std::sync::atomic::Ordering::Relaxed);
                     let current_gen = state_rtp.playback_generation();
 
                     if current_gen != last_generation {
                         last_generation = current_gen;
                         ref_real_ms = current_start;
-                        ref_unwrapped_rtp = 0;
                         prev_raw_ts = raw_ts;
-                        unwrapped_rtp = 0;
+                        ref_unwrapped_rtp = raw_ts as i64;
+                        unwrapped_rtp = raw_ts as i64;
+                        state_rtp.set_playback_position(current_start);
                     } else {
                         unwrapped_rtp = unwrap_rtp_timestamp(raw_ts, prev_raw_ts, unwrapped_rtp);
                         prev_raw_ts = raw_ts;
                     }
 
                     let delta_ticks = unwrapped_rtp - ref_unwrapped_rtp;
-                    let delta_ms = (delta_ticks as i64 * 1000) / RTP_CLOCK_RATE_HZ as i64;
+                    let delta_ms = (delta_ticks * 1000) / RTP_CLOCK_RATE_HZ as i64;
                     let position_ms = if delta_ms >= 0 {
                         ref_real_ms.saturating_add(delta_ms as u64)
                     } else {
                         ref_real_ms.saturating_sub((-delta_ms) as u64)
                     };
-                    if current_gen != 0 && position_ms >= ref_real_ms {
+                    if current_gen != 0
+                        && current_end > current_start
+                        && position_ms >= current_start
+                        && position_ms <= current_end
+                    {
                         state_rtp.set_playback_position(position_ms);
                     }
 
