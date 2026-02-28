@@ -67,9 +67,27 @@ pub async fn run_archive_loop(
                         if let Ok(json) = serde_json::to_string(&req) {
                             let _ = dc.send_text(json).await;
                         }
-                        let start = state.playback_start_ms.load(Ordering::Relaxed);
-                        state.set_playback_position(start);
+                        let current_pos = state.current_playback_position_ms();
                         state.clear_playback_wall_start();
+                        state.set_playback_position(current_pos);
+                    }
+                    ArchiveCommand::SeekTo { timestamp_ms } => {
+                        session_id.fetch_add(1, Ordering::SeqCst);
+                        if let Err(e) = dc.send_text(serde_json::to_string(&drop_buffer()).unwrap()).await {
+                            log::error!("drop_buffer (SeekTo) send error: {:?}", e);
+                        }
+                        let req = get_archive_fragment(timestamp_ms, FRAGMENT_DURATION_MS, true);
+                        if let Ok(json) = serde_json::to_string(&req) {
+                            if let Err(e) = dc.send_text(json).await {
+                                log::error!("get_archive_fragment (SeekTo) send error: {:?}", e);
+                            }
+                        }
+                        state.set_playback_span(timestamp_ms, timestamp_ms + FRAGMENT_DURATION_MS as u64);
+                        state.set_playback_position(timestamp_ms);
+                        state.clear_playback_wall_start();
+                        state.last_play_from_requested_ms.store(timestamp_ms, Ordering::Relaxed);
+                        state.next_playback_generation();
+                        log::info!("SeekTo {} (no play)", timestamp_ms);
                     }
                     ArchiveCommand::Pause => {
                         let req = stop_stream();

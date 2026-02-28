@@ -359,8 +359,8 @@ pub fn new_timeline(
             if view_end > view_start {
                 let local_x = (x_clamped - track_left).clamp(0.0, track_width);
                 let timestamp_ms = x_to_timestamp(local_x, track_width, view_start, view_end);
-                let _ = cmd_tx.try_send(ArchiveCommand::PlayFrom { timestamp_ms });
-                log::info!("Timeline: клик -> воспроизведение с {}", format_tooltip(timestamp_ms));
+                let _ = cmd_tx.try_send(ArchiveCommand::SeekTo { timestamp_ms });
+                log::info!("Timeline: клик -> переход к {}", format_tooltip(timestamp_ms));
             }
         }
         gesture.widget().queue_draw();

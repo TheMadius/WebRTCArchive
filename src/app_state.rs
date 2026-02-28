@@ -12,6 +12,8 @@ pub enum ArchiveCommand {
     GetRanges { start_time: Option<u64>, end_time: Option<u64> },
     /// Начать воспроизведение с указанного timestamp (мс).
     PlayFrom { timestamp_ms: u64 },
+    /// Перейти к метке времени без запуска воспроизведения (клик по таймлайну).
+    SeekTo { timestamp_ms: u64 },
     /// Остановить воспроизведение (полная остановка).
     Stop,
     /// Пауза: stop_stream, позиция сохраняется.
@@ -254,8 +256,15 @@ impl ArchiveState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_paused(&self) -> bool {
         self.playback_paused_at_unix_ms.load(Ordering::Relaxed) != 0
+    }
+
+    /// Идёт ли воспроизведение (привязка к часам есть и не на паузе). При старте — false.
+    pub fn is_playing(&self) -> bool {
+        self.playback_started_at_unix_ms.load(Ordering::Relaxed) != 0
+            && self.playback_paused_at_unix_ms.load(Ordering::Relaxed) == 0
     }
 
     /// Текущая позиция воспроизведения по стенным часам (или замороженная при паузе).

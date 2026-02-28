@@ -7,7 +7,7 @@ use gtk4::gdk::Key;
 use gtk4::prelude::*;
 use gtk4::{
     Application, ApplicationWindow, Box as GtkBox, Button, DrawingArea, EventControllerKey,
-    EventControllerMotion, EventControllerScroll, GestureDrag, HeaderBar, Orientation,
+    EventControllerMotion, EventControllerScroll, GestureDrag, Orientation,
 };
 use std::cell::Cell;
 use std::f64::consts::PI;
@@ -195,22 +195,19 @@ impl MainWindow {
         });
         video_area.add_controller(drag);
 
-        let header = HeaderBar::new();
-        root.append(&header);
-
         let timeline = timeline::new_timeline(state.clone(), cmd_tx.clone());
         timeline.set_hexpand(true);
         timeline.set_vexpand(false);
 
-        let pause_btn = Button::from_icon_name("media-playback-pause-symbolic");
-        pause_btn.set_tooltip_text(Some("Пауза / Воспроизведение"));
+        let pause_btn = Button::from_icon_name("media-playback-start-symbolic");
+        pause_btn.set_tooltip_text(Some("Воспроизведение / Пауза"));
         let state_pause = Arc::clone(&state);
         let cmd_pause = cmd_tx.clone();
         pause_btn.connect_clicked(move |_| {
-            if state_pause.is_paused() {
-                let _ = cmd_pause.try_send(ArchiveCommand::Play);
-            } else {
+            if state_pause.is_playing() {
                 let _ = cmd_pause.try_send(ArchiveCommand::Pause);
+            } else {
+                let _ = cmd_pause.try_send(ArchiveCommand::Play);
             }
         });
         let timeline_row = GtkBox::new(Orientation::Horizontal, 8);
@@ -234,10 +231,10 @@ impl MainWindow {
         let state_btn = Arc::clone(&state);
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
             timeline_tick.queue_draw();
-            pause_btn_sync.set_icon_name(if state_btn.is_paused() {
-                "media-playback-start-symbolic"
-            } else {
+            pause_btn_sync.set_icon_name(if state_btn.is_playing() {
                 "media-playback-pause-symbolic"
+            } else {
+                "media-playback-start-symbolic"
             });
             gtk4::glib::ControlFlow::Continue
         });
