@@ -3,21 +3,11 @@ mod timeline;
 use crate::app_state::ArchiveState;
 use crate::config::AppConfig;
 use crate::video_decoder::SharedFrame;
-use chrono::{DateTime, Local};
 use gtk4::prelude::*;
-use gtk4::{Application, ApplicationWindow, Box as GtkBox, CenterBox, DrawingArea, Label, Orientation};
-use std::sync::atomic::Ordering;
+use gtk4::{Application, ApplicationWindow, Box as GtkBox, DrawingArea, Orientation};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-fn format_playback_time(ms: u64) -> String {
-    if ms == 0 {
-        return "--:--:--".to_string();
-    }
-    DateTime::from_timestamp_millis(ms as i64)
-        .map(|utc| utc.with_timezone(&Local).format("%H:%M:%S").to_string())
-        .unwrap_or_else(|| "--:--:--".to_string())
-}
 
 pub struct MainWindow {
     window: ApplicationWindow,
@@ -112,55 +102,22 @@ impl MainWindow {
             cr.restore().ok();
         });
 
-        // Одна перерисовка ~30 fps: сливаем уведомления о кадрах и перерисовываем. Без коротких таймеров (2/16 мс) ядро не грузится в 100%.
-        let video_area_redraw = video_area.clone();
-        let rx = frame_updated_rx;
-        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(33), move || {
-            while rx.try_recv().is_ok() {}
-            video_area_redraw.queue_draw();
-            gtk4::glib::ControlFlow::Continue
-        });
-
         let timeline = timeline::new_timeline(state.clone(), cmd_tx);
         timeline.set_hexpand(true);
         timeline.set_vexpand(false);
 
-        let time_bar = CenterBox::new();
-        time_bar.set_vexpand(false);
-        time_bar.set_margin_top(4);
-        time_bar.set_margin_bottom(2);
-        let time_label = Label::new(Some("--:--:--"));
-        time_label.add_css_class("dim-label");
-        time_label.set_halign(gtk4::Align::Center);
-        let time_label_wrapper = GtkBox::new(Orientation::Horizontal, 0);
-        time_label_wrapper.add_css_class("time-label-bg");
-        time_label_wrapper.append(&time_label);
-        time_bar.set_center_widget(Some(&time_label_wrapper));
-
-        let display = gtk4::gdk::Display::default().expect("No default display");
-        let provider = gtk4::CssProvider::new();
-        let bg = timeline::TIMELINE_BG_CSS;
-        provider.load_from_data(&format!(
-            ".time-label-bg {{ background-color: {bg}; border-radius: 6px; padding: 4px 12px; }}"
-        ));
-        gtk4::style_context_add_provider_for_display(
-            &display,
-            &provider,
-            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
-
-        let state_time = Arc::clone(&state);
-        let time_label_clone = time_label.clone();
-        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-            let pos = state_time.playback_position_ms.load(Ordering::Relaxed);
-            let start = state_time.playback_start_ms.load(Ordering::Relaxed);
-            let display_ms = if pos > 0 { pos } else { start };
-            time_label_clone.set_label(&format_playback_time(display_ms));
+        // Одна перерисовка ~30 fps: сливаем уведомления о кадрах и перерисовываем видео + таймлайн (маркер воспроизведения).
+        let video_area_redraw = video_area.clone();
+        let timeline_redraw = timeline.clone();
+        let rx = frame_updated_rx;
+        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(33), move || {
+            while rx.try_recv().is_ok() {}
+            video_area_redraw.queue_draw();
+            timeline_redraw.queue_draw();
             gtk4::glib::ControlFlow::Continue
         });
 
         root.append(&video_area);
-        root.append(&time_bar);
         root.append(&timeline);
 
         window.set_child(Some(&root));

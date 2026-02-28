@@ -12,8 +12,8 @@ use tokio::sync::mpsc;
 
 const MARGIN: f64 = 10.0;
 const BAR_HEIGHT: f64 = 28.0;
-const LABEL_AREA_HEIGHT: f64 = 20.0;
-const TICK_HEIGHT_SHORT: f64 = 6.0;
+const LABEL_AREA_HEIGHT: f64 = 22.0;
+const TICK_HEIGHT_SHORT: f64 = 10.0;
 const PLAYHEAD_WIDTH: f64 = 2.5;
 const PLAYHEAD_TRIANGLE_H: f64 = 8.0;
 const MIN_VIEW_SPAN_MS: u64 = 5_000;   // минимум 5 сек при зуме
@@ -36,24 +36,27 @@ impl ViewState {
     }
 }
 
-// Современная палитра (тёмная тема, комфортная для восприятия)
+// Тёмная палитра (zinc-подобная)
 mod palette {
     // Фон таймлайна — мягкий тёмно-серый (zinc-900)
     pub const BG: (f64, f64, f64) = (0.095, 0.095, 0.106);
     // Канавка полосы — на тон светлее (zinc-800)
     pub const TRACK: (f64, f64, f64) = (0.161, 0.161, 0.165);
-    // Доступные отрезки — приглушённый изумруд/teal, не режет глаз
-    pub const RANGE: (f64, f64, f64) = (0.298, 0.612, 0.514);
-    // Засечки и второстепенный текст — нейтральный серый (zinc-500)
-    pub const TICK: (f64, f64, f64) = (0.447, 0.447, 0.478);
-    // Подписи шкалы — читаемый светло-серый (zinc-400)
-    pub const LABEL: (f64, f64, f64) = (0.631, 0.631, 0.667);
-    // Ползунок воспроизведения — тёплый акцент (amber-500), хорошо заметен
+    // Доступные отрезки — приглушённый синий/slate
+    pub const RANGE: (f64, f64, f64) = (0.38, 0.52, 0.72);
+    // Засечки — светлые на тёмной полосе (zinc-300)
+    pub const TICK: (f64, f64, f64) = (0.78, 0.78, 0.82);
+    // Подписи временной шкалы — хорошо читаемый светлый (zinc-200)
+    pub const LABEL: (f64, f64, f64) = (0.88, 0.88, 0.91);
+    // Ползунок воспроизведения — тёплый акцент (amber)
     pub const PLAYHEAD: (f64, f64, f64) = (0.965, 0.620, 0.043);
-    // Иллюзорный маркер при наведении — полупрозрачный светлый
+    // Подпись текущего времени над плейхедом — светлый текст
+    pub const TIME_LABEL_TEXT: (f64, f64, f64) = (0.93, 0.93, 0.95);
+    // Маркер при наведении — полупрозрачный светлый
     pub const HOVER_MARKER: (f64, f64, f64, f64) = (1.0, 1.0, 1.0, 0.45);
 }
-/// Цвет фона таймлайна в формате CSS (для подложки времени и т.п.)
+/// Цвет фона таймлайна в формате CSS (тёмная тема)
+#[allow(dead_code)]
 pub const TIMELINE_BG_CSS: &str = "#18181b";
 
 fn ms_to_datetime_utc(ms: u64) -> Option<DateTime<Utc>> {
@@ -65,11 +68,18 @@ fn ms_to_local(ms: u64) -> Option<DateTime<Local>> {
     ms_to_datetime_utc(ms).map(|utc| utc.with_timezone(&Local))
 }
 
-/// Форматирование времени для шкалы (короткое), в локальной временной зоне.
+/// Форматирование времени для шкалы (ЧЧ:ММ:СС), в локальной временной зоне.
 fn format_scale(ms: u64) -> String {
     ms_to_local(ms)
-        .map(|dt| dt.format("%H:%M").to_string())
-        .unwrap_or_else(|| "--:--".to_string())
+        .map(|dt| dt.format("%H:%M:%S").to_string())
+        .unwrap_or_else(|| "--:--:--".to_string())
+}
+
+/// Полная дата и время для подписи над плейхедом (ДД.ММ.ГГГГ ЧЧ:ММ:СС).
+fn format_playhead_label(ms: u64) -> String {
+    ms_to_local(ms)
+        .map(|dt| dt.format("%d.%m.%Y %H:%M:%S").to_string())
+        .unwrap_or_else(|| "--.--.---- --:--:--".to_string())
 }
 
 /// Форматирование времени для подсказки при наведении (полное), в локальной временной зоне.
@@ -135,7 +145,7 @@ pub fn new_timeline(
     cmd_tx: mpsc::Sender<ArchiveCommand>,
 ) -> DrawingArea {
     let area = DrawingArea::new();
-    area.set_content_height(88);
+    area.set_content_height(96);
 
     let view_state = Arc::new(Mutex::new(ViewState::default()));
     let last_mouse_x = Arc::new(Mutex::new(0.0f64));
@@ -177,16 +187,16 @@ pub fn new_timeline(
             };
             let view_span_ms = view_end.saturating_sub(view_start).max(1);
 
-            // Подпись начала и конца видимого окна над полосой
+            // Временная шкала: подпись начала и конца видимого окна над полосой
             cr.set_source_rgb(palette::LABEL.0, palette::LABEL.1, palette::LABEL.2);
             cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-            cr.set_font_size(10.0);
-            cr.move_to(track_left, MARGIN + 10.0);
+            cr.set_font_size(11.0);
+            cr.move_to(track_left, MARGIN + 12.0);
             cr.show_text(&format_scale(view_start)).ok();
             let end_text = format_scale(view_end);
             let ext = cr.text_extents(&end_text).ok();
             let end_x = (track_left + track_width - ext.map(|e| e.width()).unwrap_or(0.0)).max(track_left);
-            cr.move_to(end_x, MARGIN + 10.0);
+            cr.move_to(end_x, MARGIN + 12.0);
             cr.show_text(&end_text).ok();
 
             // Фон полосы (тёмная канавка)
@@ -194,29 +204,23 @@ pub fn new_timeline(
             cr.rectangle(track_left, bar_top, track_width, BAR_HEIGHT);
             cr.fill().ok();
 
-            // Засечки по минутам (относительно видимого окна)
+            // Подписи временной шкалы под полосой (вертикальные линии рисуем после отрезков)
             let step_min = tick_step_minutes(view_span_ms);
             let step_ms = step_min * 60 * 1000;
             let first_tick_ms = (view_start / step_ms).saturating_mul(step_ms);
             if step_ms > 0 {
-                cr.set_source_rgb(palette::TICK.0, palette::TICK.1, palette::TICK.2);
-                cr.set_line_width(1.0);
                 cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-                cr.set_font_size(9.0);
+                cr.set_font_size(11.0);
                 let mut t = first_tick_ms;
                 while t <= view_end {
                     let x = timestamp_to_x(t, track_left, track_width, view_start, view_end);
                     if x >= track_left && x <= track_left + track_width {
-                        cr.move_to(x, bar_bottom - TICK_HEIGHT_SHORT);
-                        cr.line_to(x, bar_bottom);
-                        cr.stroke().ok();
                         let label = format_scale(t);
                         let ext = cr.text_extents(&label).ok();
                         let lw = ext.map(|e| e.width()).unwrap_or(0.0);
                         cr.set_source_rgb(palette::LABEL.0, palette::LABEL.1, palette::LABEL.2);
-                        cr.move_to((x - lw / 2.0).max(track_left), bar_bottom + 12.0);
+                        cr.move_to((x - lw / 2.0).max(track_left), bar_bottom + 14.0);
                         cr.show_text(&label).ok();
-                        cr.set_source_rgb(palette::TICK.0, palette::TICK.1, palette::TICK.2);
                     }
                     t = t.saturating_add(step_ms);
                 }
@@ -245,6 +249,7 @@ pub fn new_timeline(
             let pos_in_view = draw_pos_ms >= view_start && draw_pos_ms <= view_end;
             if end_ms > start_ms && pos_in_view {
                 let px = timestamp_to_x(draw_pos_ms, track_left, track_width, view_start, view_end);
+                // Сначала рисуем плейхед, чтобы подпись времени поверх него не перекрывалась
                 cr.set_source_rgb(palette::PLAYHEAD.0, palette::PLAYHEAD.1, palette::PLAYHEAD.2);
                 cr.rectangle(px - PLAYHEAD_WIDTH / 2.0, bar_top, PLAYHEAD_WIDTH, BAR_HEIGHT);
                 cr.fill().ok();
@@ -253,6 +258,53 @@ pub fn new_timeline(
                 cr.line_to(px + 6.0, bar_top);
                 cr.close_path();
                 cr.fill().ok();
+                // Подпись времени над плейхедом: рисуем поверх маркера, с запасом по высоте
+                let time_str = format_playhead_label(draw_pos_ms);
+                cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+                cr.set_font_size(11.0);
+                let ext = cr.text_extents(&time_str).ok();
+                if let Some(te) = ext {
+                    let pad_x = 10.0f64;
+                    let pad_y = 4.0f64;
+                    let rw = te.width() + 2.0 * pad_x;
+                    let rh = te.height() + 2.0 * pad_y;
+                    let rx = (px - rw / 2.0).clamp(MARGIN, (w - MARGIN - rw).max(MARGIN));
+                    let ry = (bar_top - PLAYHEAD_TRIANGLE_H - rh - 14.0).max(MARGIN);
+                    let radius = 6.0;
+                    let pi = std::f64::consts::PI;
+                    cr.set_source_rgb(palette::BG.0, palette::BG.1, palette::BG.2);
+                    cr.new_path();
+                    cr.move_to(rx + radius, ry);
+                    cr.line_to(rx + rw - radius, ry);
+                    cr.arc(rx + rw - radius, ry + radius, radius, 1.5 * pi, 0.0);
+                    cr.line_to(rx + rw, ry + rh - radius);
+                    cr.arc(rx + rw - radius, ry + rh - radius, radius, 0.0, 0.5 * pi);
+                    cr.line_to(rx + radius, ry + rh);
+                    cr.arc(rx + radius, ry + rh - radius, radius, 0.5 * pi, pi);
+                    cr.line_to(rx, ry + radius);
+                    cr.arc(rx + radius, ry + radius, radius, pi, 1.5 * pi);
+                    cr.close_path();
+                    cr.fill().ok();
+                    cr.set_source_rgb(palette::TIME_LABEL_TEXT.0, palette::TIME_LABEL_TEXT.1, palette::TIME_LABEL_TEXT.2);
+                    cr.move_to(rx + pad_x, ry + pad_y + te.height() - te.y_bearing());
+                    cr.show_text(&time_str).ok();
+                }
+            }
+
+            // Вертикальные линии шкалы поверх полосы: каждая отметка времени — линия через всю полосу
+            if step_ms > 0 {
+                cr.set_source_rgb(palette::TICK.0, palette::TICK.1, palette::TICK.2);
+                cr.set_line_width(1.0);
+                let mut t = first_tick_ms;
+                while t <= view_end {
+                    let x = timestamp_to_x(t, track_left, track_width, view_start, view_end);
+                    if x >= track_left && x <= track_left + track_width {
+                        cr.move_to(x, bar_top);
+                        cr.line_to(x, bar_bottom);
+                        cr.stroke().ok();
+                    }
+                    t = t.saturating_add(step_ms);
+                }
             }
 
             // Иллюзорный маркер при наведении на полосу
