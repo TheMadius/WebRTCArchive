@@ -235,11 +235,14 @@ pub fn new_timeline(
                 cr.fill().ok();
             }
 
-            // Ползунок воспроизведения
+            // Ползунок воспроизведения (позиция из RTP timestamp с учётом разворота 32-bit)
             let start_ms = state_draw.playback_start_ms.load(std::sync::atomic::Ordering::Relaxed);
             let end_ms = state_draw.playback_end_ms.load(std::sync::atomic::Ordering::Relaxed);
-            if end_ms > start_ms && start_ms >= view_start && end_ms <= view_end + 1 {
-                let px = timestamp_to_x(start_ms, track_left, track_width, view_start, view_end);
+            let position_ms = state_draw.playback_position_ms.load(std::sync::atomic::Ordering::Relaxed);
+            let draw_pos_ms = if position_ms > 0 { position_ms } else { start_ms };
+            let pos_in_view = draw_pos_ms >= view_start && draw_pos_ms <= view_end;
+            if end_ms > start_ms && pos_in_view {
+                let px = timestamp_to_x(draw_pos_ms, track_left, track_width, view_start, view_end);
                 cr.set_source_rgb(palette::PLAYHEAD.0, palette::PLAYHEAD.1, palette::PLAYHEAD.2);
                 cr.rectangle(px - PLAYHEAD_WIDTH / 2.0, bar_top, PLAYHEAD_WIDTH, BAR_HEIGHT);
                 cr.fill().ok();

@@ -21,6 +21,7 @@ use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParam
 use webrtc::rtp_transceiver::{RTCPFeedback, RTCRtpTransceiverInit};
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 
+use crate::app_state::ArchiveState;
 use crate::video_decoder::{SharedFrame, VideoDecoder};
 
 pub struct BuiltOffer {
@@ -32,14 +33,35 @@ pub struct BuiltOffer {
     pub message_rx: mpsc::Receiver<String>,
 }
 
+/// Частота дискретизации RTP timestamp для H.264/HEVC (90 kHz).
+const RTP_CLOCK_RATE_HZ: u64 = 90_000;
+
+/// Разворачивает 32-битный RTP timestamp с учётом переполнения (обнуления в середине потока).
+#[inline]
+fn unwrap_rtp_timestamp(raw_ts: u32, prev_raw: u32, prev_unwrapped: i64) -> i64 {
+    let diff = raw_ts as i64 - prev_raw as i64;
+    let delta = if diff >= 0 && diff < 0x8000_0000 {
+        diff
+    } else if diff < 0 && diff >= -0x8000_0000 {
+        diff
+    } else if diff < 0 {
+        diff + 0x1_0000_0000
+    } else {
+        diff - 0x1_0000_0000
+    };
+    prev_unwrapped + delta
+}
+
 /// Строит offer под SFU: один локальный кандидат (IP сервера), без задержки host-пары — быстрый выход из Checking в Connected и DTLS.
 /// `shared_frame`: буфер последнего декодированного кадра для отрисовки в UI.
 /// `frame_updated`: при каждом новом кадре отправляется () для немедленной перерисовки (без привязки ко времени).
+/// `state`: для обновления playback_position_ms из RTP timestamp (движение ползунка на timeline).
 pub async fn build_offer_h264_h265(
     server_host: Option<&str>,
     ice_servers: &[String],
     shared_frame: SharedFrame,
     frame_updated: std::sync::mpsc::SyncSender<()>,
+    state: Arc<ArchiveState>,
 ) -> Result<BuiltOffer> {
     let mut m = MediaEngine::default();
 
@@ -281,9 +303,10 @@ pub async fn build_offer_h264_h265(
         // Буфер 8 пакетов: при кратковременных задержках декодера читатель не блокируется сразу — меньше «подвисаний».
         let (payload_tx, payload_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
 
-        // Поток 1: только чтение RTP с трека, отправка payload в канал.
+        // Поток 1: чтение RTP, разворот timestamp (32-bit wrap), обновление playback_position_ms, отправка payload в канал.
         let track_reader = Arc::clone(&track);
         let payload_tx_reader = payload_tx.clone();
+        let state_rtp = Arc::clone(&state);
         std::thread::spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -297,6 +320,11 @@ pub async fn build_offer_h264_h265(
             };
             log::info!("[video] RTP reader loop started for track ssrc={}", track_reader.ssrc());
             let mut rtp_packets: u64 = 0;
+            let mut prev_raw_ts: u32 = 0;
+            let mut unwrapped_rtp: i64 = 0;
+            let mut ref_real_ms: u64 = 0;
+            let mut ref_unwrapped_rtp: i64 = 0;
+            let mut last_generation: u64 = 0;
             rt.block_on(async {
                 loop {
                     let (pkt, _attrs) = match track_reader.read_rtp().await {
@@ -304,6 +332,36 @@ pub async fn build_offer_h264_h265(
                         Err(_) => break,
                     };
                     rtp_packets += 1;
+                    let raw_ts = pkt.header.timestamp;
+                    let current_start = state_rtp.playback_start_ms.load(std::sync::atomic::Ordering::Relaxed);
+                    let current_gen = state_rtp.playback_generation();
+
+                    if current_gen != last_generation {
+                        last_generation = current_gen;
+                        ref_real_ms = current_start;
+                        ref_unwrapped_rtp = 0;
+                        prev_raw_ts = raw_ts;
+                        unwrapped_rtp = 0;
+                    } else {
+                        unwrapped_rtp = unwrap_rtp_timestamp(raw_ts, prev_raw_ts, unwrapped_rtp);
+                        prev_raw_ts = raw_ts;
+                    }
+
+                    let delta_ticks = unwrapped_rtp - ref_unwrapped_rtp;
+                    let delta_ms = (delta_ticks as i64 * 1000) / RTP_CLOCK_RATE_HZ as i64;
+                    let position_ms = if delta_ms >= 0 {
+                        ref_real_ms.saturating_add(delta_ms as u64)
+                    } else {
+                        ref_real_ms.saturating_sub((-delta_ms) as u64)
+                    };
+                    let end_ms = state_rtp.playback_end_ms.load(std::sync::atomic::Ordering::Relaxed);
+                    if current_gen != 0
+                        && position_ms >= ref_real_ms
+                        && position_ms <= end_ms
+                    {
+                        state_rtp.set_playback_position(position_ms);
+                    }
+
                     if rtp_packets <= 3 || rtp_packets % 300 == 0 {
                         log::info!("[video] RTP reader: packet #{} ({} bytes) -> channel", rtp_packets, pkt.payload.len());
                     }

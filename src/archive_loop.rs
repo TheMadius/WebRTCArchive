@@ -52,6 +52,8 @@ pub async fn run_archive_loop(
                             }
                         }
                         state.set_playback_span(timestamp_ms, timestamp_ms + FRAGMENT_DURATION_MS as u64);
+                        state.set_playback_position(timestamp_ms);
+                        state.next_playback_generation();
                         if let Err(e) = dc.send_text(serde_json::to_string(&play_stream()).unwrap()).await {
                             log::error!("play_stream send error: {:?}", e);
                         }
@@ -63,6 +65,8 @@ pub async fn run_archive_loop(
                         if let Ok(json) = serde_json::to_string(&req) {
                             let _ = dc.send_text(json).await;
                         }
+                        let start = state.playback_start_ms.load(Ordering::Relaxed);
+                        state.set_playback_position(start);
                     }
                 }
             }
@@ -99,6 +103,7 @@ pub async fn run_archive_loop(
                             "archive_fragment" => {
                                 if let Ok(frag) = serde_json::from_value::<ArchiveFragmentResponseData>(data.clone()) {
                                     state.set_playback_span(frag.start_time, frag.end_time);
+                                    state.set_playback_position(frag.start_time);
                                     log::info!("[DC] archive_fragment: {} - {}", frag.start_time, frag.end_time);
                                     schedule_next_fragment(
                                         Arc::clone(&dc),

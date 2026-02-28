@@ -49,7 +49,7 @@ fn main() -> Result<()> {
         rt.block_on(async move {
             let server_host_opt = webrtc_client::host_from_webrtc_url(&webrtc_url);
             let server_host = server_host_opt.as_deref();
-            let built = match webrtc_offer::build_offer_h264_h265(server_host, &ice_servers, shared_frame_for_thread, frame_updated_tx).await {
+            let built = match webrtc_offer::build_offer_h264_h265(server_host, &ice_servers, shared_frame_for_thread, frame_updated_tx, state_for_thread.clone()).await {
                 Ok(built) => built,
                 Err(err) => {
                     log::error!("Failed to build WebRTC offer: {:?}", err);
