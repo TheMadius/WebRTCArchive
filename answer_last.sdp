@@ -1,5 +1,5 @@
 v=0
-o=- 5950175625473753305 955699431 IN IP4 192.168.0.106
+o=- 6282824153207300191 725114827 IN IP4 192.168.0.106
 s=-
 t=0 0
 a=group:BUNDLE 0 1
@@ -8,8 +8,8 @@ a=ice-lite
 m=video 7285 UDP/TLS/RTP/SAVPF 102 103
 c=IN IP4 192.168.0.106
 a=rtcp:7285 IN IP4 192.168.0.106
-a=ice-ufrag:wKgAahx1HHU=_44
-a=ice-pwd:toycyvoF8wNHdqwH2XIvvDR4
+a=ice-ufrag:wKgAahx1HHU=_51
+a=ice-pwd:4knY8qlRoQ05rx3IWgs7BjhR
 a=fingerprint:sha-256 F3:56:CF:13:17:8A:45:6E:12:89:1F:BA:99:EB:D5:86:A2:9F:2F:B9:D8:04:E7:12:11:A3:EE:6D:3F:5C:91:E2
 a=setup:passive
 a=mid:0
@@ -39,8 +39,8 @@ a=candidate:udpcandidate 1 udp 110 192.168.0.106 7285 typ host
 a=candidate:tcpcandidate 1 tcp 105 192.168.0.106 7285 typ host tcptype passive
 m=application 7285 UDP/DTLS/SCTP webrtc-datachannel
 c=IN IP4 192.168.0.106
-a=ice-ufrag:wKgAahx1HHU=_44
-a=ice-pwd:toycyvoF8wNHdqwH2XIvvDR4
+a=ice-ufrag:wKgAahx1HHU=_51
+a=ice-pwd:4knY8qlRoQ05rx3IWgs7BjhR
 a=fingerprint:sha-256 F3:56:CF:13:17:8A:45:6E:12:89:1F:BA:99:EB:D5:86:A2:9F:2F:B9:D8:04:E7:12:11:A3:EE:6D:3F:5C:91:E2
 a=setup:passive
 a=mid:1

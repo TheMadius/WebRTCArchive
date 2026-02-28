@@ -117,6 +117,23 @@ impl MainWindow {
             gtk4::glib::ControlFlow::Continue
         });
 
+        // Резерв: если RTP перестал обновлять позицию (например, после смены фрагмента), двигаем маркер по реальному времени.
+        let state_fallback = state.clone();
+        let prev_position = std::cell::Cell::new(0u64);
+        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(400), move || {
+            let gen = state_fallback.playback_generation.load(std::sync::atomic::Ordering::Relaxed);
+            let start_ms = state_fallback.playback_start_ms.load(std::sync::atomic::Ordering::Relaxed);
+            let end_ms = state_fallback.playback_end_ms.load(std::sync::atomic::Ordering::Relaxed);
+            let pos = state_fallback.playback_position_ms.load(std::sync::atomic::Ordering::Relaxed);
+            let prev = prev_position.get();
+            if gen != 0 && start_ms < end_ms && pos < end_ms && pos == prev && prev != 0 {
+                let new_pos = (pos + 400).min(end_ms);
+                state_fallback.set_playback_position(new_pos);
+            }
+            prev_position.set(pos);
+            gtk4::glib::ControlFlow::Continue
+        });
+
         root.append(&video_area);
         root.append(&timeline);
 

@@ -245,7 +245,12 @@ pub fn new_timeline(
             let start_ms = state_draw.playback_start_ms.load(std::sync::atomic::Ordering::Relaxed);
             let end_ms = state_draw.playback_end_ms.load(std::sync::atomic::Ordering::Relaxed);
             let position_ms = state_draw.playback_position_ms.load(std::sync::atomic::Ordering::Relaxed);
-            let draw_pos_ms = if position_ms > 0 { position_ms } else { start_ms };
+            let raw_pos = if position_ms > 0 { position_ms } else { start_ms };
+            let draw_pos_ms = if end_ms > start_ms {
+                raw_pos.min(end_ms)
+            } else {
+                raw_pos
+            };
             let pos_in_view = draw_pos_ms >= view_start && draw_pos_ms <= view_end;
             if end_ms > start_ms && pos_in_view {
                 let px = timestamp_to_x(draw_pos_ms, track_left, track_width, view_start, view_end);

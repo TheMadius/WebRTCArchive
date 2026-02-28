@@ -26,6 +26,8 @@ pub struct ArchiveState {
     pub playback_position_ms: AtomicU64,
     /// Поколение воспроизведения: увеличивается при каждом PlayFrom. RTP-читатель сбрасывает offset и обрабатывает как первое нажатие.
     pub playback_generation: AtomicU64,
+    /// Timestamp, с которого запросили фрагмент при последнем PlayFrom (чтобы игнорировать устаревшие archive_fragment).
+    pub last_play_from_requested_ms: AtomicU64,
     /// Флаг для UI: нужно перерисовать таймлайн (пришли новые ranges).
     pub timeline_dirty: AtomicBool,
 }
@@ -38,6 +40,7 @@ impl Default for ArchiveState {
             playback_end_ms: AtomicU64::new(0),
             playback_position_ms: AtomicU64::new(0),
             playback_generation: AtomicU64::new(0),
+            last_play_from_requested_ms: AtomicU64::new(0),
             timeline_dirty: AtomicBool::new(false),
         }
     }

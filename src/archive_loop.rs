@@ -53,6 +53,7 @@ pub async fn run_archive_loop(
                         }
                         state.set_playback_span(timestamp_ms, timestamp_ms + FRAGMENT_DURATION_MS as u64);
                         state.set_playback_position(timestamp_ms);
+                        state.last_play_from_requested_ms.store(timestamp_ms, Ordering::Relaxed);
                         state.next_playback_generation();
                         if let Err(e) = dc.send_text(serde_json::to_string(&play_stream()).unwrap()).await {
                             log::error!("play_stream send error: {:?}", e);
@@ -102,14 +103,27 @@ pub async fn run_archive_loop(
                             }
                             "archive_fragment" => {
                                 if let Ok(frag) = serde_json::from_value::<ArchiveFragmentResponseData>(data.clone()) {
-                                    state.set_playback_span(frag.start_time, frag.end_time);
-                                    state.set_playback_position(frag.start_time);
-                                    log::info!("[DC] archive_fragment: {} - {}", frag.start_time, frag.end_time);
-                                    schedule_next_fragment(
-                                        Arc::clone(&dc),
-                                        Arc::clone(&session_id),
-                                        frag.end_time,
-                                    );
+                                    let requested = state.last_play_from_requested_ms.load(Ordering::Relaxed);
+                                    let margin_ms = 5_000u64;
+                                    let is_for_current_request = requested == 0
+                                        || (frag.start_time <= requested + margin_ms && frag.end_time >= requested.saturating_sub(margin_ms));
+                                    if is_for_current_request {
+                                        state.set_playback_span(frag.start_time, frag.end_time);
+                                        state.set_playback_position(frag.start_time);
+                                        log::info!("[DC] archive_fragment: {} - {} (applied)", frag.start_time, frag.end_time);
+                                        schedule_next_fragment(
+                                            Arc::clone(&dc),
+                                            Arc::clone(&session_id),
+                                            frag.end_time,
+                                        );
+                                    } else {
+                                        log::info!(
+                                            "[DC] archive_fragment: {} - {} (ignored, requested was {})",
+                                            frag.start_time,
+                                            frag.end_time,
+                                            requested
+                                        );
+                                    }
                                 }
                             }
                             _ => {

@@ -354,11 +354,7 @@ pub async fn build_offer_h264_h265(
                     } else {
                         ref_real_ms.saturating_sub((-delta_ms) as u64)
                     };
-                    let end_ms = state_rtp.playback_end_ms.load(std::sync::atomic::Ordering::Relaxed);
-                    if current_gen != 0
-                        && position_ms >= ref_real_ms
-                        && position_ms <= end_ms
-                    {
+                    if current_gen != 0 && position_ms >= ref_real_ms {
                         state_rtp.set_playback_position(position_ms);
                     }
 
