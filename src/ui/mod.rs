@@ -1,13 +1,19 @@
 mod timeline;
 
-use crate::app_state::ArchiveState;
+use crate::app_state::{ArchiveCommand, ArchiveState, VideoViewState};
 use crate::config::AppConfig;
 use crate::video_decoder::SharedFrame;
+use gtk4::gdk::Key;
 use gtk4::prelude::*;
-use gtk4::{Application, ApplicationWindow, Box as GtkBox, DrawingArea, Orientation};
+use gtk4::{
+    Application, ApplicationWindow, Box as GtkBox, Button, DrawingArea, EventControllerKey,
+    EventControllerMotion, EventControllerScroll, GestureDrag, HeaderBar, Orientation,
+};
+use std::cell::Cell;
+use std::f64::consts::PI;
+use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-
 
 pub struct MainWindow {
     window: ApplicationWindow,
@@ -18,7 +24,8 @@ impl MainWindow {
         app: &Application,
         _config: AppConfig,
         state: Arc<ArchiveState>,
-        cmd_tx: mpsc::Sender<crate::app_state::ArchiveCommand>,
+        video_view: Arc<VideoViewState>,
+        cmd_tx: mpsc::Sender<ArchiveCommand>,
         shared_frame: SharedFrame,
         frame_updated_rx: std::sync::mpsc::Receiver<()>,
     ) -> Self {
@@ -28,16 +35,19 @@ impl MainWindow {
 
         let root = GtkBox::new(Orientation::Vertical, 0);
 
-        // Область видео: занимает всё доступное место, при изменении окна масштабируется
+        // Область видео (создаём до кнопок, чтобы кнопки могли вызывать queue_draw)
         let video_area = DrawingArea::new();
         video_area.set_hexpand(true);
         video_area.set_vexpand(true);
 
         let frame_for_draw = Arc::clone(&shared_frame);
+        let video_view_draw = Arc::clone(&video_view);
         video_area.set_draw_func(move |_area, cr, width, height| {
             let area_w = width as f64;
             let area_h = height as f64;
-            // Фон на всю область (видно при отсутствии кадра или при letterbox)
+            if area_w < 1.0 || area_h < 1.0 {
+                return;
+            }
             cr.set_source_rgb(0.1, 0.1, 0.1);
             cr.rectangle(0.0, 0.0, area_w, area_h);
             cr.fill().ok();
@@ -86,25 +96,126 @@ impl MainWindow {
             if sw <= 0.0 || sh <= 0.0 {
                 return;
             }
-            // Масштаб «вписать»: изображение целиком в области, пропорции сохраняются
+            let zoom = video_view_draw.zoom_percent() as f64 / 100.0;
+            let rot_deg = video_view_draw.rotation_deg() as f64;
             let scale_x = area_w / sw;
             let scale_y = area_h / sh;
-            let scale = scale_x.min(scale_y);
-            let drawn_w = sw * scale;
-            let drawn_h = sh * scale;
+            // Масштаб «на весь элемент»: кадр заполняет область без чёрных полос (обрезается по одной оси).
+            let scale = scale_x.max(scale_y) * zoom;
+            let angle_rad = rot_deg * PI / 180.0;
+            let cos_a = angle_rad.cos().abs();
+            let sin_a = angle_rad.sin().abs();
+            let drawn_w = sw * scale * cos_a + sh * scale * sin_a;
+            let drawn_h = sw * scale * sin_a + sh * scale * cos_a;
+            video_view_draw.clamp_pan_to_frame(area_w, area_h, drawn_w, drawn_h);
+            let pan_x = video_view_draw.pan_x();
+            let pan_y = video_view_draw.pan_y();
             let offset_x = (area_w - drawn_w) / 2.0;
             let offset_y = (area_h - drawn_h) / 2.0;
+            // Порядок: масштаб -> сдвиг центра масштабированного кадра в (0,0) -> поворот вокруг центра -> позиция в виджете.
+            // Иначе центр кадра не совпадает с осью поворота и в углах появляются чёрные полосы.
             cr.save().ok();
-            cr.translate(offset_x, offset_y);
+            cr.translate(
+                offset_x + drawn_w / 2.0 + pan_x,
+                offset_y + drawn_h / 2.0 + pan_y,
+            );
+            cr.rotate(angle_rad);
+            cr.translate(-sw / 2.0 * scale, -sh / 2.0 * scale);
             cr.scale(scale, scale);
             cr.set_source_surface(&surface, 0.0, 0.0).ok();
             cr.paint().ok();
             cr.restore().ok();
         });
 
-        let timeline = timeline::new_timeline(state.clone(), cmd_tx);
+        video_area.set_hexpand(true);
+        video_area.set_vexpand(true);
+        video_area.set_focusable(true);
+        let motion = EventControllerMotion::new();
+        let video_for_focus = video_area.clone();
+        motion.connect_enter(move |_, _x, _y| {
+            video_for_focus.grab_focus();
+        });
+        video_area.add_controller(motion);
+
+        // Управление мышью только над областью видео: колёсико = зум, Shift+колёсико = поворот 5°, перетаскивание = панорама.
+        let shift_held: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        let key_controller = EventControllerKey::new();
+        let shift_held_press = Rc::clone(&shift_held);
+        key_controller.connect_key_pressed(move |_, key, _modifiers, _| {
+            if key == Key::Shift_L || key == Key::Shift_R {
+                shift_held_press.set(true);
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        let shift_held_release = Rc::clone(&shift_held);
+        key_controller.connect_key_released(move |_, key, _modifiers, _| {
+            if key == Key::Shift_L || key == Key::Shift_R {
+                shift_held_release.set(false);
+            }
+        });
+        video_area.add_controller(key_controller);
+
+        let scroll = EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
+        let vv_scroll = Arc::clone(&video_view);
+        let va_scroll = video_area.clone();
+        let shift_scroll = Rc::clone(&shift_held);
+        scroll.connect_scroll(move |_, _dx, dy| {
+            if shift_scroll.get() {
+                if dy < 0.0 {
+                    vv_scroll.rotate_5_cw();
+                } else if dy > 0.0 {
+                    vv_scroll.rotate_5_ccw();
+                }
+            } else {
+                if dy < 0.0 {
+                    vv_scroll.zoom_in();
+                } else if dy > 0.0 {
+                    vv_scroll.zoom_out();
+                }
+            }
+            va_scroll.queue_draw();
+            gtk4::glib::Propagation::Proceed
+        });
+        video_area.add_controller(scroll);
+
+        let drag = GestureDrag::new();
+        let vv_drag = Arc::clone(&video_view);
+        let va_drag = video_area.clone();
+        let last_drag: Rc<Cell<(f64, f64)>> = Rc::new(Cell::new((0.0, 0.0)));
+        let last_drag_begin = Rc::clone(&last_drag);
+        drag.connect_drag_begin(move |_, _x, _y| {
+            last_drag_begin.set((0.0, 0.0));
+        });
+        let last_drag_up = Rc::clone(&last_drag);
+        drag.connect_drag_update(move |_, offset_x, offset_y| {
+            let (lx, ly) = last_drag_up.get();
+            vv_drag.add_pan(offset_x - lx, offset_y - ly);
+            last_drag_up.set((offset_x, offset_y));
+            va_drag.queue_draw();
+        });
+        video_area.add_controller(drag);
+
+        let header = HeaderBar::new();
+        root.append(&header);
+
+        let timeline = timeline::new_timeline(state.clone(), cmd_tx.clone());
         timeline.set_hexpand(true);
         timeline.set_vexpand(false);
+
+        let pause_btn = Button::from_icon_name("media-playback-pause-symbolic");
+        pause_btn.set_tooltip_text(Some("Пауза / Воспроизведение"));
+        let state_pause = Arc::clone(&state);
+        let cmd_pause = cmd_tx.clone();
+        pause_btn.connect_clicked(move |_| {
+            if state_pause.is_paused() {
+                let _ = cmd_pause.try_send(ArchiveCommand::Play);
+            } else {
+                let _ = cmd_pause.try_send(ArchiveCommand::Pause);
+            }
+        });
+        let timeline_row = GtkBox::new(Orientation::Horizontal, 8);
+        timeline_row.append(&pause_btn);
+        timeline_row.append(&timeline);
 
         // Одна перерисовка ~30 fps: сливаем уведомления о кадрах и перерисовываем видео + таймлайн (маркер воспроизведения).
         let video_area_redraw = video_area.clone();
@@ -117,15 +228,22 @@ impl MainWindow {
             gtk4::glib::ControlFlow::Continue
         });
 
-        // Периодическая перерисовка таймлайна, чтобы плейхед двигался по стенным часам.
+        // Периодическая перерисовка таймлайна и синхронизация надписи кнопки Пауза/Воспроизведение.
         let timeline_tick = timeline.clone();
+        let pause_btn_sync = pause_btn.clone();
+        let state_btn = Arc::clone(&state);
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
             timeline_tick.queue_draw();
+            pause_btn_sync.set_icon_name(if state_btn.is_paused() {
+                "media-playback-start-symbolic"
+            } else {
+                "media-playback-pause-symbolic"
+            });
             gtk4::glib::ControlFlow::Continue
         });
 
         root.append(&video_area);
-        root.append(&timeline);
+        root.append(&timeline_row);
 
         window.set_child(Some(&root));
 

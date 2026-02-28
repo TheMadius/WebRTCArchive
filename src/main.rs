@@ -8,7 +8,7 @@ mod webrtc_client;
 mod webrtc_offer;
 
 use anyhow::Result;
-use app_state::ArchiveState;
+use app_state::{ArchiveState, VideoViewState};
 use config::AppConfig;
 use video_decoder::SharedFrame;
 use gtk4::prelude::*;
@@ -24,6 +24,7 @@ fn main() -> Result<()> {
     let config = AppConfig::load().unwrap_or_default();
     let state = Arc::new(ArchiveState::default());
     let state_for_thread = Arc::clone(&state);
+    let video_view = Arc::new(VideoViewState::new());
     let shared_frame: SharedFrame = Arc::new(std::sync::Mutex::new(None));
     let shared_frame_for_thread = Arc::clone(&shared_frame);
     // Ёмкость 1: декодер делает try_send и не блокируется на UI; лишние уведомления отбрасываются.
@@ -199,6 +200,7 @@ fn main() -> Result<()> {
             app,
             config.clone(),
             Arc::clone(&state),
+            Arc::clone(&video_view),
             cmd_tx_ui.clone(),
             Arc::clone(&shared_frame),
             rx,

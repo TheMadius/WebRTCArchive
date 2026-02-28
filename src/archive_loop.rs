@@ -71,6 +71,26 @@ pub async fn run_archive_loop(
                         state.set_playback_position(start);
                         state.clear_playback_wall_start();
                     }
+                    ArchiveCommand::Pause => {
+                        let req = stop_stream();
+                        if let Ok(json) = serde_json::to_string(&req) {
+                            if let Err(e) = dc.send_text(json).await {
+                                log::error!("stop_stream (pause) send error: {:?}", e);
+                            }
+                        }
+                        state.set_playback_paused();
+                        log::info!("Pause: stop_stream sent, position frozen");
+                    }
+                    ArchiveCommand::Play => {
+                        let req = play_stream();
+                        if let Ok(json) = serde_json::to_string(&req) {
+                            if let Err(e) = dc.send_text(json).await {
+                                log::error!("play_stream (resume) send error: {:?}", e);
+                            }
+                        }
+                        state.set_playback_resumed();
+                        log::info!("Play: play_stream sent");
+                    }
                 }
             }
             Some(json_str) = msg_rx.recv() => {

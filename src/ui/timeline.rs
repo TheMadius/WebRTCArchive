@@ -589,7 +589,7 @@ pub fn new_timeline(
     let area_redraw = area.clone();
     let state_redraw = Arc::clone(&state);
     let view_state_redraw = Arc::clone(&view_state);
-    gtk4::glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+    gtk4::glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
         if state_redraw.timeline_dirty.swap(false, std::sync::atomic::Ordering::Relaxed) {
             let ranges = state_redraw.get_ranges();
             if !ranges.is_empty() {
