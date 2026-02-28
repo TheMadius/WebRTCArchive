@@ -43,6 +43,9 @@ pub struct ArchiveState {
     pub last_play_from_requested_ms: AtomicU64,
     /// Флаг для UI: нужно перерисовать таймлайн (пришли новые ranges).
     pub timeline_dirty: AtomicBool,
+    /// Отложенный фрагмент: применить, когда позиция войдёт в [start, end]. 0 = нет отложенного.
+    pub pending_fragment_start_ms: AtomicU64,
+    pub pending_fragment_end_ms: AtomicU64,
 }
 
 impl Default for ArchiveState {
@@ -58,6 +61,8 @@ impl Default for ArchiveState {
             playback_paused_at_unix_ms: AtomicU64::new(0),
             last_play_from_requested_ms: AtomicU64::new(0),
             timeline_dirty: AtomicBool::new(false),
+            pending_fragment_start_ms: AtomicU64::new(0),
+            pending_fragment_end_ms: AtomicU64::new(0),
         }
     }
 }
@@ -268,14 +273,15 @@ impl ArchiveState {
     }
 
     /// Текущая позиция воспроизведения по стенным часам (или замороженная при паузе).
+    /// При достижении позиции отложенного фрагмента применяет его (чтобы время не «перескакивало»).
     pub fn current_playback_position_ms(&self) -> u64 {
         let started_at = self.playback_started_at_unix_ms.load(Ordering::Relaxed);
         if started_at == 0 {
             return self.playback_position_ms.load(Ordering::Relaxed);
         }
         let content_start = self.playback_content_start_ms.load(Ordering::Relaxed);
-        let start = self.playback_start_ms.load(Ordering::Relaxed);
-        let end = self.playback_end_ms.load(Ordering::Relaxed);
+        let mut start = self.playback_start_ms.load(Ordering::Relaxed);
+        let mut end = self.playback_end_ms.load(Ordering::Relaxed);
         let paused_at = self.playback_paused_at_unix_ms.load(Ordering::Relaxed);
         let elapsed = if paused_at != 0 {
             paused_at.saturating_sub(started_at)
@@ -287,6 +293,21 @@ impl ArchiveState {
             now_ms.saturating_sub(started_at)
         };
         let pos = content_start.saturating_add(elapsed);
+        // Применить отложенный фрагмент, когда позиция вошла в его диапазон.
+        let pending_start = self.pending_fragment_start_ms.load(Ordering::Relaxed);
+        let pending_end = self.pending_fragment_end_ms.load(Ordering::Relaxed);
+        if pending_start != 0
+            && pending_end > pending_start
+            && pos >= pending_start
+            && pos <= pending_end
+        {
+            self.playback_start_ms.store(pending_start, Ordering::Relaxed);
+            self.playback_end_ms.store(pending_end, Ordering::Relaxed);
+            self.pending_fragment_start_ms.store(0, Ordering::Relaxed);
+            self.pending_fragment_end_ms.store(0, Ordering::Relaxed);
+            start = pending_start;
+            end = pending_end;
+        }
         if end > start {
             pos.min(end).max(start)
         } else {

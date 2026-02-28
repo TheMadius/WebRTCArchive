@@ -54,6 +54,8 @@ pub async fn run_archive_loop(
                         state.set_playback_span(timestamp_ms, timestamp_ms + FRAGMENT_DURATION_MS as u64);
                         state.set_playback_position(timestamp_ms);
                         state.set_playback_wall_start(timestamp_ms);
+                        state.pending_fragment_start_ms.store(0, Ordering::Relaxed);
+                        state.pending_fragment_end_ms.store(0, Ordering::Relaxed);
                         state.last_play_from_requested_ms.store(timestamp_ms, Ordering::Relaxed);
                         state.next_playback_generation();
                         if let Err(e) = dc.send_text(serde_json::to_string(&play_stream()).unwrap()).await {
@@ -85,6 +87,8 @@ pub async fn run_archive_loop(
                         state.set_playback_span(timestamp_ms, timestamp_ms + FRAGMENT_DURATION_MS as u64);
                         state.set_playback_position(timestamp_ms);
                         state.clear_playback_wall_start();
+                        state.pending_fragment_start_ms.store(0, Ordering::Relaxed);
+                        state.pending_fragment_end_ms.store(0, Ordering::Relaxed);
                         state.last_play_from_requested_ms.store(timestamp_ms, Ordering::Relaxed);
                         state.next_playback_generation();
                         log::info!("SeekTo {} (no play)", timestamp_ms);
@@ -148,8 +152,27 @@ pub async fn run_archive_loop(
                                     let is_for_current_request = requested == 0
                                         || (frag.start_time <= requested + margin_ms && frag.end_time >= requested.saturating_sub(margin_ms));
                                     if is_for_current_request {
-                                        state.set_playback_span(frag.start_time, frag.end_time);
-                                        log::info!("[DC] archive_fragment: {} - {} (applied)", frag.start_time, frag.end_time);
+                                        let current_pos = state.current_playback_position_ms();
+                                        let start = state.playback_start_ms.load(Ordering::Relaxed);
+                                        let end = state.playback_end_ms.load(Ordering::Relaxed);
+                                        let span_unset = start == 0 && end == 0;
+                                        let fragment_contains_position =
+                                            current_pos >= frag.start_time && current_pos <= frag.end_time;
+                                        if span_unset || fragment_contains_position {
+                                            state.set_playback_span(frag.start_time, frag.end_time);
+                                            state.pending_fragment_start_ms.store(0, Ordering::Relaxed);
+                                            state.pending_fragment_end_ms.store(0, Ordering::Relaxed);
+                                            log::info!("[DC] archive_fragment: {} - {} (applied)", frag.start_time, frag.end_time);
+                                        } else {
+                                            state.pending_fragment_start_ms.store(frag.start_time, Ordering::Relaxed);
+                                            state.pending_fragment_end_ms.store(frag.end_time, Ordering::Relaxed);
+                                            log::info!(
+                                                "[DC] archive_fragment: {} - {} (pending, pos={})",
+                                                frag.start_time,
+                                                frag.end_time,
+                                                current_pos
+                                            );
+                                        }
                                         schedule_next_fragment(
                                             Arc::clone(&dc),
                                             Arc::clone(&state),
