@@ -1,0 +1,28 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Отладочные файлы приложения (генерируются при запуске)
+offer_sent.sdp
+offer_last.sdp
+answer_last.sdp
+answer_raw.json
+
+# Локальная конфигурация (опционально: раскомментируйте, если config.json с секретами)
+# config.json
+
+# IDE / редакторы
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Логи и временные файлы
+*.log
+*.tmp
+*.temp

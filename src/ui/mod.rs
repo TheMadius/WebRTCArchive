@@ -25,16 +25,22 @@ impl MainWindow {
         window.set_title(Some("WebRTC Archive Player"));
         window.set_default_size(1280, 720);
 
-        let root = GtkBox::new(Orientation::Vertical, 4);
+        let root = GtkBox::new(Orientation::Vertical, 0);
 
+        // Область видео: занимает всё доступное место, при изменении окна масштабируется
         let video_area = DrawingArea::new();
-        video_area.set_content_width(1280);
-        video_area.set_content_height(640);
+        video_area.set_hexpand(true);
+        video_area.set_vexpand(true);
 
         let frame_for_draw = Arc::clone(&shared_frame);
         video_area.set_draw_func(move |_area, cr, width, height| {
-            // Копируем кадр под замком и сразу отпускаем — конвертация и отрисовка без блокировки,
-            // чтобы декодер мог писать новые кадры и воспроизведение шло в реальном времени.
+            let area_w = width as f64;
+            let area_h = height as f64;
+            // Фон на всю область (видно при отсутствии кадра или при letterbox)
+            cr.set_source_rgb(0.1, 0.1, 0.1);
+            cr.rectangle(0.0, 0.0, area_w, area_h);
+            cr.fill().ok();
+
             let frame = {
                 let guard = match frame_for_draw.lock() {
                     Ok(g) => g,
@@ -43,8 +49,6 @@ impl MainWindow {
                 guard.clone()
             };
             let Some(ref frame) = frame else {
-                cr.set_source_rgb(0.1, 0.1, 0.1);
-                cr.paint().ok();
                 return;
             };
             log::debug!("[video] UI draw: frame {}x{}", frame.width, frame.height);
@@ -54,7 +58,6 @@ impl MainWindow {
             if w <= 0 || h <= 0 || frame.data.len() < size_rgb {
                 return;
             }
-            // Cairo Rgb24 = 32 bpp (stride = width*4). Конвертируем RGB24 (3 bpp) -> padding 4.
             let stride = w * 4;
             let mut data = vec![0u8; (w as usize).saturating_mul(h as usize).saturating_mul(4)];
             let src = &frame.data[..size_rgb];
@@ -82,10 +85,16 @@ impl MainWindow {
             if sw <= 0.0 || sh <= 0.0 {
                 return;
             }
-            let scale_x = width as f64 / sw;
-            let scale_y = height as f64 / sh;
+            // Масштаб «вписать»: изображение целиком в области, пропорции сохраняются
+            let scale_x = area_w / sw;
+            let scale_y = area_h / sh;
             let scale = scale_x.min(scale_y);
+            let drawn_w = sw * scale;
+            let drawn_h = sh * scale;
+            let offset_x = (area_w - drawn_w) / 2.0;
+            let offset_y = (area_h - drawn_h) / 2.0;
             cr.save().ok();
+            cr.translate(offset_x, offset_y);
             cr.scale(scale, scale);
             cr.set_source_surface(&surface, 0.0, 0.0).ok();
             cr.paint().ok();
@@ -102,6 +111,8 @@ impl MainWindow {
         });
 
         let timeline = timeline::new_timeline(state, cmd_tx);
+        timeline.set_hexpand(true);
+        timeline.set_vexpand(false);
 
         root.append(&video_area);
         root.append(&timeline);
