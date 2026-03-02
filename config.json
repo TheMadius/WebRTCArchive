@@ -1,5 +1,5 @@
 {
-  "webrtc_url": "https://192.168.0.106:7200/webrtc?app=live&stream=d1bf3c0c-30b9-44ce-a861-1302add956aa&type=archive",
+  "webrtc_url": "https://10.24.88.31:7200/webrtc?app=live&stream=08261044-5c4e-4934-bb0d-fb9e29885de9&type=archive",
   "tls_insecure_skip_verify": true,
   "ice_servers": []
 }

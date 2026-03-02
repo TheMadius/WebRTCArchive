@@ -98,30 +98,27 @@ impl MainWindow {
             }
             let zoom = video_view_draw.zoom_percent() as f64 / 100.0;
             let rot_deg = video_view_draw.rotation_deg() as f64;
-            let scale_x = area_w / sw;
-            let scale_y = area_h / sh;
-            // Масштаб «на весь элемент»: кадр заполняет область без чёрных полос (обрезается по одной оси).
-            let scale = scale_x.max(scale_y) * zoom;
+            // Растягиваем кадр под размеры области (заполняем экран по ширине и высоте).
+            let scale_x = (area_w / sw) * zoom;
+            let scale_y = (area_h / sh) * zoom;
             let angle_rad = rot_deg * PI / 180.0;
             let cos_a = angle_rad.cos().abs();
             let sin_a = angle_rad.sin().abs();
-            let drawn_w = sw * scale * cos_a + sh * scale * sin_a;
-            let drawn_h = sw * scale * sin_a + sh * scale * cos_a;
+            let drawn_w = sw * scale_x * cos_a + sh * scale_y * sin_a;
+            let drawn_h = sw * scale_x * sin_a + sh * scale_y * cos_a;
             video_view_draw.clamp_pan_to_frame(area_w, area_h, drawn_w, drawn_h);
             let pan_x = video_view_draw.pan_x();
             let pan_y = video_view_draw.pan_y();
             let offset_x = (area_w - drawn_w) / 2.0;
             let offset_y = (area_h - drawn_h) / 2.0;
-            // Порядок: масштаб -> сдвиг центра масштабированного кадра в (0,0) -> поворот вокруг центра -> позиция в виджете.
-            // Иначе центр кадра не совпадает с осью поворота и в углах появляются чёрные полосы.
             cr.save().ok();
             cr.translate(
                 offset_x + drawn_w / 2.0 + pan_x,
                 offset_y + drawn_h / 2.0 + pan_y,
             );
             cr.rotate(angle_rad);
-            cr.translate(-sw / 2.0 * scale, -sh / 2.0 * scale);
-            cr.scale(scale, scale);
+            cr.translate(-sw / 2.0 * scale_x, -sh / 2.0 * scale_y);
+            cr.scale(scale_x, scale_y);
             cr.set_source_surface(&surface, 0.0, 0.0).ok();
             cr.paint().ok();
             cr.restore().ok();
