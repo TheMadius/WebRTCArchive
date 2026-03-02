@@ -20,6 +20,8 @@ pub enum ArchiveCommand {
     Pause,
     /// Возобновление: play_stream.
     Play,
+    /// Скорость воспроизведения: 1, 2, 4 или 8 (set_speed по Data Channel).
+    SetSpeed { speed: u8 },
 }
 
 /// Состояние, доступное UI (ranges, текущая позиция для отрисовки).
@@ -46,6 +48,8 @@ pub struct ArchiveState {
     /// Отложенный фрагмент: применить, когда позиция войдёт в [start, end]. 0 = нет отложенного.
     pub pending_fragment_start_ms: AtomicU64,
     pub pending_fragment_end_ms: AtomicU64,
+    /// Текущая скорость воспроизведения: 1, 2, 4 или 8.
+    pub playback_speed: std::sync::atomic::AtomicU8,
 }
 
 impl Default for ArchiveState {
@@ -63,6 +67,7 @@ impl Default for ArchiveState {
             timeline_dirty: AtomicBool::new(false),
             pending_fragment_start_ms: AtomicU64::new(0),
             pending_fragment_end_ms: AtomicU64::new(0),
+            playback_speed: std::sync::atomic::AtomicU8::new(1),
         }
     }
 }
@@ -177,6 +182,17 @@ impl VideoViewState {
 }
 
 impl ArchiveState {
+    pub fn playback_speed(&self) -> u8 {
+        self.playback_speed.load(Ordering::Relaxed)
+    }
+    pub fn set_playback_speed(&self, speed: u8) {
+        let s = match speed {
+            1 | 2 | 4 | 8 => speed,
+            _ => 1,
+        };
+        self.playback_speed.store(s, Ordering::Relaxed);
+    }
+
     /// Увеличивает поколение воспроизведения (вызывать при каждом PlayFrom). RTP-читатель сбрасывает старый offset.
     pub fn next_playback_generation(&self) -> u64 {
         self.playback_generation.fetch_add(1, Ordering::Relaxed) + 1

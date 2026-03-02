@@ -1,11 +1,11 @@
-//! Таймлайн архива: шкала, зум (колёсико), панорама (Shift+колёсико или перетаскивание), клик -> PlayFrom.
+//! Таймлайн архива: панель управления (Play/Pause, скорость), шкала, зум, панорама, клик -> PlayFrom.
 
 use crate::app_state::ArchiveCommand;
 use crate::archive_protocol::TimeRange;
 use chrono::{DateTime, Local, Utc};
 use gtk4::prelude::*;
 use gtk4::gdk::ModifierType;
-use gtk4::{DrawingArea, EventControllerScroll, EventControllerMotion, GestureClick, GestureDrag};
+use gtk4::{Box as GtkBox, Button, DrawingArea, DropDown, EventControllerMotion, EventControllerScroll, GestureClick, GestureDrag, Orientation};
 use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
@@ -15,7 +15,6 @@ const BAR_HEIGHT: f64 = 28.0;
 const LABEL_AREA_HEIGHT: f64 = 22.0;
 const TICK_HEIGHT_SHORT: f64 = 10.0;
 const PLAYHEAD_WIDTH: f64 = 2.5;
-const PLAYHEAD_TRIANGLE_H: f64 = 8.0;
 const MIN_VIEW_SPAN_MS: u64 = 5_000;   // минимум 5 сек при зуме
 const ZOOM_FACTOR_PER_STEP: f64 = 1.15;
 const PAN_FRACTION_PER_STEP: f64 = 0.2;
@@ -139,13 +138,25 @@ fn tick_step_minutes(span_ms: u64) -> u64 {
     }
 }
 
-/// Создаёт виджет таймлайна с зумом, панорамой и навигацией по клику.
+const SPEEDS: [u8; 4] = [1, 2, 4, 8];
+fn speed_to_index(s: u8) -> u32 {
+    match s {
+        1 => 0,
+        2 => 1,
+        4 => 2,
+        8 => 3,
+        _ => 0,
+    }
+}
+
+/// Создаёт виджет таймлайна: слева панель (Play/Pause + скорость), справа шкала с зумом и навигацией.
 pub fn new_timeline(
     state: Arc<crate::app_state::ArchiveState>,
     cmd_tx: mpsc::Sender<ArchiveCommand>,
-) -> DrawingArea {
+) -> GtkBox {
     let area = DrawingArea::new();
     area.set_content_height(96);
+    area.set_hexpand(true);
 
     let view_state = Arc::new(Mutex::new(ViewState::default()));
     let last_mouse_x = Arc::new(Mutex::new(0.0f64));
@@ -336,6 +347,7 @@ pub fn new_timeline(
     let state_click = Arc::clone(&state);
     let view_state_click = Arc::clone(&view_state);
     let area_click = area.clone();
+    let cmd_seek = cmd_tx.clone();
     let click = GestureClick::new();
     click.connect_pressed(move |gesture, _n, x, y| {
         let ranges = state_click.get_ranges();
@@ -359,7 +371,7 @@ pub fn new_timeline(
             if view_end > view_start {
                 let local_x = (x_clamped - track_left).clamp(0.0, track_width);
                 let timestamp_ms = x_to_timestamp(local_x, track_width, view_start, view_end);
-                let _ = cmd_tx.try_send(ArchiveCommand::SeekTo { timestamp_ms });
+                let _ = cmd_seek.try_send(ArchiveCommand::SeekTo { timestamp_ms });
                 log::info!("Timeline: клик -> переход к {}", format_tooltip(timestamp_ms));
             }
         }
@@ -606,5 +618,60 @@ pub fn new_timeline(
         gtk4::glib::ControlFlow::Continue
     });
 
-    area
+    // Панель управления: Play/Pause + скорость, встроенная в таймлайн
+    let pause_btn = Button::from_icon_name("media-playback-start-symbolic");
+    pause_btn.set_tooltip_text(Some("Воспроизведение / Пауза"));
+    pause_btn.add_css_class("flat");
+    let state_pause = Arc::clone(&state);
+    let cmd_pause = cmd_tx.clone();
+    pause_btn.connect_clicked(move |_| {
+        if state_pause.is_playing() {
+            let _ = cmd_pause.try_send(ArchiveCommand::Pause);
+        } else {
+            let _ = cmd_pause.try_send(ArchiveCommand::Play);
+        }
+    });
+
+    let speed_dropdown = DropDown::from_strings(&["1x", "2x", "4x", "8x"]);
+    speed_dropdown.set_tooltip_text(Some("Скорость воспроизведения"));
+    speed_dropdown.set_selected(speed_to_index(state.playback_speed()));
+    let state_speed = Arc::clone(&state);
+    let cmd_speed = cmd_tx.clone();
+    speed_dropdown.connect_selected_notify(move |dd| {
+        let idx = dd.selected() as usize;
+        let speed = if idx < SPEEDS.len() { SPEEDS[idx] } else { 1 };
+        if state_speed.playback_speed() != speed {
+            state_speed.set_playback_speed(speed);
+            let _ = cmd_speed.try_send(ArchiveCommand::SetSpeed { speed });
+        }
+    });
+
+    let controls_box = GtkBox::new(Orientation::Horizontal, 6);
+    controls_box.set_width_request(100);
+    controls_box.add_css_class("timeline-controls");
+    controls_box.append(&pause_btn);
+    controls_box.append(&speed_dropdown);
+
+    let root = GtkBox::new(Orientation::Horizontal, 0);
+    root.add_css_class("timeline-bar");
+    root.append(&controls_box);
+    root.append(&area);
+
+    let pause_btn_sync = pause_btn.clone();
+    let speed_dropdown_sync = speed_dropdown.clone();
+    let state_sync = Arc::clone(&state);
+    gtk4::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        pause_btn_sync.set_icon_name(if state_sync.is_playing() {
+            "media-playback-pause-symbolic"
+        } else {
+            "media-playback-start-symbolic"
+        });
+        let want_idx = speed_to_index(state_sync.playback_speed());
+        if speed_dropdown_sync.selected() != want_idx {
+            speed_dropdown_sync.set_selected(want_idx);
+        }
+        gtk4::glib::ControlFlow::Continue
+    });
+
+    root
 }

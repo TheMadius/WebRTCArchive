@@ -6,7 +6,7 @@ use crate::video_decoder::SharedFrame;
 use gtk4::gdk::Key;
 use gtk4::prelude::*;
 use gtk4::{
-    Application, ApplicationWindow, Box as GtkBox, Button, DrawingArea, EventControllerKey,
+    Application, ApplicationWindow, Box as GtkBox, CssProvider, DrawingArea, EventControllerKey,
     EventControllerMotion, EventControllerScroll, GestureDrag, Orientation,
 };
 use std::cell::Cell;
@@ -196,22 +196,7 @@ impl MainWindow {
         timeline.set_hexpand(true);
         timeline.set_vexpand(false);
 
-        let pause_btn = Button::from_icon_name("media-playback-start-symbolic");
-        pause_btn.set_tooltip_text(Some("Воспроизведение / Пауза"));
-        let state_pause = Arc::clone(&state);
-        let cmd_pause = cmd_tx.clone();
-        pause_btn.connect_clicked(move |_| {
-            if state_pause.is_playing() {
-                let _ = cmd_pause.try_send(ArchiveCommand::Pause);
-            } else {
-                let _ = cmd_pause.try_send(ArchiveCommand::Play);
-            }
-        });
-        let timeline_row = GtkBox::new(Orientation::Horizontal, 8);
-        timeline_row.append(&pause_btn);
-        timeline_row.append(&timeline);
-
-        // Одна перерисовка ~30 fps: сливаем уведомления о кадрах и перерисовываем видео + таймлайн (маркер воспроизведения).
+        // Перерисовка ~30 fps: сливаем уведомления о кадрах и перерисовываем видео + таймлайн.
         let video_area_redraw = video_area.clone();
         let timeline_redraw = timeline.clone();
         let rx = frame_updated_rx;
@@ -222,24 +207,25 @@ impl MainWindow {
             gtk4::glib::ControlFlow::Continue
         });
 
-        // Периодическая перерисовка таймлайна и синхронизация надписи кнопки Пауза/Воспроизведение.
-        let timeline_tick = timeline.clone();
-        let pause_btn_sync = pause_btn.clone();
-        let state_btn = Arc::clone(&state);
-        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-            timeline_tick.queue_draw();
-            pause_btn_sync.set_icon_name(if state_btn.is_playing() {
-                "media-playback-pause-symbolic"
-            } else {
-                "media-playback-start-symbolic"
-            });
-            gtk4::glib::ControlFlow::Continue
-        });
-
         root.append(&video_area);
-        root.append(&timeline_row);
+        root.append(&timeline);
 
         window.set_child(Some(&root));
+
+        let window_clone = window.clone();
+        window.connect_realize(move |_| {
+            let display = gtk4::prelude::WidgetExt::display(&window_clone);
+            let provider = CssProvider::new();
+            let _ = provider.load_from_data(
+                ".timeline-bar { background-color: #18181b; padding: 4px 0; } \
+                 .timeline-controls { background-color: #18181b; padding: 2px 6px; border-radius: 4px; }"
+            );
+            gtk4::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        });
 
         Self { window }
     }

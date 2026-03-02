@@ -10,7 +10,6 @@ use ffmpeg_next::util::format::Pixel;
 use std::sync::Arc;
 use bytes::Bytes;
 use webrtc::rtp::codecs::h264::H264Packet;
-use webrtc::rtp::packet::Packet as RtpPacket;
 use webrtc::rtp::packetizer::Depacketizer;
 
 /// Один декодированный кадр в формате RGB24 для отрисовки.
@@ -57,11 +56,6 @@ impl VideoDecoder {
             scaler: None,
             rgb_frame: FfmpegVideoFrame::empty(),
         })
-    }
-
-    /// Подаёт RTP-пакет, при необходимости возвращает декодированный кадр.
-    pub fn push_rtp(&mut self, pkt: &RtpPacket) -> Result<Option<DecodedFrame>> {
-        self.push_payload(&pkt.payload)
     }
 
     /// Подаёт payload RTP (для конвейера: чтение и декодирование в разных потоках).

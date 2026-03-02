@@ -65,6 +65,18 @@ pub struct StopStreamRequest {
     pub data: serde_json::Value,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SetSpeedRequest {
+    #[serde(rename = "type")]
+    pub typ: &'static str,
+    pub data: SetSpeedData,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetSpeedData {
+    pub speed: f64,
+}
+
 // --- Ответы сервера ---
 
 #[derive(Debug, Deserialize)]
@@ -134,5 +146,12 @@ pub fn stop_stream() -> StopStreamRequest {
     StopStreamRequest {
         typ: "stop_stream",
         data: serde_json::json!({}),
+    }
+}
+
+pub fn set_speed(speed: f64) -> SetSpeedRequest {
+    SetSpeedRequest {
+        typ: "set_speed",
+        data: SetSpeedData { speed },
     }
 }

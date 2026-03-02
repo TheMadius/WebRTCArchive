@@ -2,7 +2,7 @@
 
 use crate::app_state::{ArchiveCommand, ArchiveState};
 use crate::archive_protocol::{
-    get_archive_fragment, get_ranges, drop_buffer, play_stream, stop_stream,
+    get_archive_fragment, get_ranges, drop_buffer, play_stream, stop_stream, set_speed,
     ArchiveFragmentResponseData, ServerMessage, RangesResponseData,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,7 +13,8 @@ use webrtc::data_channel::RTCDataChannel;
 
 // Длительность одного фрагмента архива (10 секунд).
 const FRAGMENT_DURATION_MS: i64 = 10_000;
-const REQUEST_NEXT_FRAGMENT_BEFORE_END_MS: u64 = 2_000; // запрашивать следующий фрагмент за 2 сек до конца
+/// Запрашивать следующий фрагмент за столько миллисекунд контента до конца текущего.
+const REQUEST_NEXT_FRAGMENT_BEFORE_END_MS: u64 = 2_000;
 
 /// Запускает цикл: при открытии Data Channel отправляет get_ranges,
 /// обрабатывает ответы (ranges, archive_fragment) из message_rx, обрабатывает команды (PlayFrom, Stop).
@@ -61,7 +62,11 @@ pub async fn run_archive_loop(
                         if let Err(e) = dc.send_text(serde_json::to_string(&play_stream()).unwrap()).await {
                             log::error!("play_stream send error: {:?}", e);
                         }
-                        log::info!("PlayFrom {} (with key frame), play_stream sent", timestamp_ms);
+                        let speed_f = state.playback_speed() as f64;
+                        if let Ok(json) = serde_json::to_string(&set_speed(speed_f)) {
+                            let _ = dc.send_text(json).await;
+                        }
+                        log::info!("PlayFrom {} (with key frame), play_stream + set_speed {}x sent", timestamp_ms, state.playback_speed());
                         // Следующий фрагмент планируем только по ответу archive_fragment, чтобы не дублировать запрос.
                     }
                     ArchiveCommand::Stop => {
@@ -112,6 +117,17 @@ pub async fn run_archive_loop(
                         }
                         state.set_playback_resumed();
                         log::info!("Play: play_stream sent");
+                    }
+                    ArchiveCommand::SetSpeed { speed } => {
+                        state.set_playback_speed(speed);
+                        let req = set_speed(speed as f64);
+                        if let Ok(json) = serde_json::to_string(&req) {
+                            if let Err(e) = dc.send_text(json).await {
+                                log::error!("set_speed send error: {:?}", e);
+                            } else {
+                                log::info!("SetSpeed: {}x sent", speed);
+                            }
+                        }
                     }
                 }
             }
@@ -210,9 +226,12 @@ fn schedule_next_fragment(
     session_id: Arc<AtomicU64>,
     next_start_ms: u64,
 ) {
-    let delay_ms = FRAGMENT_DURATION_MS as u64 - REQUEST_NEXT_FRAGMENT_BEFORE_END_MS;
+    let content_delay_ms = FRAGMENT_DURATION_MS as u64 - REQUEST_NEXT_FRAGMENT_BEFORE_END_MS;
+    let speed = state.playback_speed().max(1) as u64;
+    let delay_ms = content_delay_ms / speed;
     let delay = Duration::from_millis(delay_ms);
     let my_session = session_id.load(Ordering::SeqCst);
+    log::debug!("schedule_next_fragment: content_delay={}ms speed={} -> wall_delay={}ms", content_delay_ms, speed, delay_ms);
     tokio::spawn(async move {
         tokio::time::sleep(delay).await;
         if session_id.load(Ordering::SeqCst) != my_session {

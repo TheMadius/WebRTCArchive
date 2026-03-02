@@ -207,11 +207,27 @@ https://<host>:<port>/webrtc?type=archive&stream=<stream_id>&app=<stream_app>
 | PlayArchive | `p` | `play_stream` | `PlayArchive(const nlohmann::json &body)` |
 | StopArchive | `s` | `stop_stream` | `StopArchive(const nlohmann::json &body)` |
 | DropBuffer | `d` | `drop_buffer` | `DropBuffer(const nlohmann::json &body)` |
-| SetSpeed | `S` | `set_speed` | `SetSpeed(const nlohmann::json &body)` |
+| SetSpeed | `S` | `set_speed` | `SetSpeed(const nlohmann::json &body)` — скорость x1, x2, x4, x8 |
 | KeyFragment | `k` | `get_key` | `KeyFragment(const nlohmann::json &body)` |
 | AddFragment | `a` | `get_archive_fragment` | `AddFragment(const nlohmann::json &body)` |
 | GetUrl | — | `get_url` | `GetUrl(const nlohmann::json &body)` |
 | Ping | — | `archive_connect_support` | (ignored) |
+
+---
+
+### 2.3 Команды клиента (краткий список)
+
+| Команда | Описание |
+|---------|----------|
+| `get_ranges` | Получить доступные диапазоны архива (`data`: `start_time`, `end_time` опционально). |
+| `get_archive_fragment` | Загрузить фрагмент в буфер (`data`: `start_time`, `duration`, `key`). |
+| `play_stream` | Начать воспроизведение (`data`: `{}`). |
+| `stop_stream` | Пауза — остановить отправку кадров (`data`: `{}`). |
+| `drop_buffer` | Очистить буфер перед сменой фрагмента (`data`: `{}`). |
+| **`set_speed`** | **Скорость воспроизведения** (`data`: `speed` — число: **1**, **2**, **4**, **8** для x1, x2, x4, x8). |
+| `get_key` | Получить ключевой кадр (`data`: `start_time`). |
+| `get_url` | Получить URL для скачивания фрагмента. |
+| `archive_connect_support` | Ping, без ответа. |
 
 ---
 
@@ -485,7 +501,7 @@ https://<host>:<port>/webrtc?type=archive&stream=<stream_id>&app=<stream_app>
 
 | Поле | Тип | Обязательное | Описание |
 |------|-----|:---:|----------|
-| `speed` | double | ✓ | Множитель скорости (0.5, 1.0, 2.0, 4.0, и т.д.) |
+| `speed` | double | ✓ | Множитель скорости. Рекомендуемые значения: **1**, **2**, **4**, **8** (x1, x2, x4, x8). |
 
 **Ответ:**
 ```json
