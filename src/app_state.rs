@@ -16,7 +16,7 @@ pub enum ArchiveCommand {
     SeekTo { timestamp_ms: u64 },
     /// Остановить воспроизведение (полная остановка).
     Stop,
-    /// Пауза: stop_stream, позиция сохраняется.
+    /// Пауза: stop_stream; таймлайн по-прежнему показывает последнюю позицию из RTP.
     Pause,
     /// Возобновление: play_stream.
     Play,
@@ -227,7 +227,7 @@ impl ArchiveState {
         self.playback_paused_at_unix_ms.store(0, Ordering::Relaxed);
     }
 
-    /// Ставит воспроизведение на паузу (останавливает таймлайн, позиция сохраняется).
+    /// Ставит воспроизведение на паузу (stop_stream на сервере). playback_position_ms не меняем — таймлайн всегда показывает последнее время из RTP.
     pub fn set_playback_paused(&self) {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -272,28 +272,16 @@ impl ArchiveState {
             && self.playback_paused_at_unix_ms.load(Ordering::Relaxed) == 0
     }
 
-    /// Текущая позиция воспроизведения по стенным часам (или замороженная при паузе).
-    /// При достижении позиции отложенного фрагмента применяет его (чтобы время не «перескакивало»).
+    /// Текущая позиция воспроизведения для таймлайна.
+    /// Синхронизация 1:1 с пришедшими пакетами: позиция всегда берётся из RTP (playback_position_ms),
+    /// независимо от того, воспроизводится поток или на паузе — таймлайн следует за последним
+    /// принятым кадром; при паузе RTP не идёт, поэтому позиция остаётся замороженной.
+    /// При достижении позиции отложенного фрагмента применяет его.
     pub fn current_playback_position_ms(&self) -> u64 {
-        let started_at = self.playback_started_at_unix_ms.load(Ordering::Relaxed);
-        if started_at == 0 {
-            return self.playback_position_ms.load(Ordering::Relaxed);
-        }
-        let content_start = self.playback_content_start_ms.load(Ordering::Relaxed);
         let mut start = self.playback_start_ms.load(Ordering::Relaxed);
         let mut end = self.playback_end_ms.load(Ordering::Relaxed);
-        let paused_at = self.playback_paused_at_unix_ms.load(Ordering::Relaxed);
-        let elapsed = if paused_at != 0 {
-            paused_at.saturating_sub(started_at)
-        } else {
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            now_ms.saturating_sub(started_at)
-        };
-        let pos = content_start.saturating_add(elapsed);
-        // Применить отложенный фрагмент, когда позиция вошла в его диапазон.
+        let pos = self.playback_position_ms.load(Ordering::Relaxed);
+
         let pending_start = self.pending_fragment_start_ms.load(Ordering::Relaxed);
         let pending_end = self.pending_fragment_end_ms.load(Ordering::Relaxed);
         if pending_start != 0

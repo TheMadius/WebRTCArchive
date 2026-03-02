@@ -35,6 +35,16 @@ pub struct BuiltOffer {
 
 /// Частота RTP timestamp для H.264/HEVC (90 kHz). Сервер кладёт offset от начала дня (UTC0) в тиках этой частоты.
 const RTP_CLOCK_RATE_HZ: u64 = 90_000;
+/// Мс в сутках (для перевода RTP offset начала дня в unix ms).
+const MS_PER_DAY: u64 = 86400 * 1000;
+
+/// Преобразует RTP timestamp (offset от начала дня UTC, 90 kHz) в unix ms.
+/// `day_start_unix_ms` — начало текущих суток в unix ms (для фрагмента).
+#[inline]
+fn rtp_offset_to_unix_ms(unwrapped_rtp_ticks: i64, day_start_unix_ms: u64) -> u64 {
+    let offset_ms = (unwrapped_rtp_ticks.max(0) as u64) * 1000 / RTP_CLOCK_RATE_HZ;
+    day_start_unix_ms.saturating_add(offset_ms)
+}
 
 /// Разворачивает 32-битный RTP timestamp с учётом переполнения (обнуления в середине потока).
 #[inline]
@@ -55,7 +65,7 @@ fn unwrap_rtp_timestamp(raw_ts: u32, prev_raw: u32, prev_unwrapped: i64) -> i64 
 /// Строит offer под SFU: один локальный кандидат (IP сервера), без задержки host-пары — быстрый выход из Checking в Connected и DTLS.
 /// `shared_frame`: буфер последнего декодированного кадра для отрисовки в UI.
 /// `frame_updated`: при каждом новом кадре отправляется () для немедленной перерисовки (без привязки ко времени).
-/// `state`: рекомендательная позиция из RTP пишется в playback_position_ms (основной таймлайн — по стенным часам).
+/// `state`: позиция из RTP пишется в playback_position_ms; таймлайн всегда показывает только это время (и при воспроизведении, и при паузе).
 pub async fn build_offer_h264_h265(
     server_host: Option<&str>,
     ice_servers: &[String],
@@ -325,6 +335,7 @@ pub async fn build_offer_h264_h265(
             let mut ref_real_ms: u64 = 0;
             let mut ref_unwrapped_rtp: i64 = 0;
             let mut last_generation: u64 = 0;
+            let mut ref_anchored_this_gen: bool = false;
             rt.block_on(async {
                 loop {
                     let (pkt, _attrs) = match track_reader.read_rtp().await {
@@ -332,7 +343,6 @@ pub async fn build_offer_h264_h265(
                         Err(_) => break,
                     };
                     rtp_packets += 1;
-                    // RTP timestamp = offset от начала дня (UTC0) в тиках 90 kHz (H.264). Используется только как рекомендация.
                     let raw_ts = pkt.header.timestamp;
                     let current_start = state_rtp.playback_start_ms.load(std::sync::atomic::Ordering::Relaxed);
                     let current_end = state_rtp.playback_end_ms.load(std::sync::atomic::Ordering::Relaxed);
@@ -340,29 +350,69 @@ pub async fn build_offer_h264_h265(
 
                     if current_gen != last_generation {
                         last_generation = current_gen;
+                        ref_anchored_this_gen = false;
                         ref_real_ms = current_start;
                         prev_raw_ts = raw_ts;
                         ref_unwrapped_rtp = raw_ts as i64;
                         unwrapped_rtp = raw_ts as i64;
                         state_rtp.set_playback_position(current_start);
+                        log::info!(
+                            "[timeline] RTP sync: generation {} ref_real_ms={} raw_ts={} (anchor may be stale, will re-anchor on first in-range packet)",
+                            current_gen, ref_real_ms, raw_ts
+                        );
                     } else {
                         unwrapped_rtp = unwrap_rtp_timestamp(raw_ts, prev_raw_ts, unwrapped_rtp);
                         prev_raw_ts = raw_ts;
                     }
 
+                    let day_start_unix_ms = (current_start / MS_PER_DAY) * MS_PER_DAY;
+                    let position_from_rtp = rtp_offset_to_unix_ms(unwrapped_rtp, day_start_unix_ms);
+
                     let delta_ticks = unwrapped_rtp - ref_unwrapped_rtp;
                     let delta_ms = (delta_ticks * 1000) / RTP_CLOCK_RATE_HZ as i64;
-                    let position_ms = if delta_ms >= 0 {
+                    let position_from_ref = if delta_ms >= 0 {
                         ref_real_ms.saturating_add(delta_ms as u64)
                     } else {
                         ref_real_ms.saturating_sub((-delta_ms) as u64)
                     };
-                    if current_gen != 0
-                        && current_end > current_start
-                        && position_ms >= current_start
-                        && position_ms <= current_end
-                    {
-                        state_rtp.set_playback_position(position_ms);
+
+                    // Позиция таймлайна = реальное время ключевого кадра из RTP (offset от начала дня UTC).
+                    // Если RTP timestamp попадает в текущий фрагмент — используем его; иначе fallback на ref+delta (старый пакет).
+                    if current_gen != 0 && current_end > current_start {
+                        let rtp_in_range =
+                            position_from_rtp >= current_start && position_from_rtp <= current_end;
+                        if rtp_in_range {
+                            state_rtp.set_playback_position(position_from_rtp);
+                            if !ref_anchored_this_gen {
+                                ref_anchored_this_gen = true;
+                                ref_unwrapped_rtp = unwrapped_rtp;
+                                ref_real_ms = position_from_rtp;
+                                log::info!(
+                                    "[timeline] RTP keyframe time: packet #{} raw_ts={} -> position_from_rtp={} (in range)",
+                                    rtp_packets, raw_ts, position_from_rtp
+                                );
+                            }
+                            if rtp_packets <= 5 || rtp_packets % 90 == 0 {
+                                log::info!(
+                                    "[timeline] RTP packet #{} raw_ts={} unwrapped_rtp={} position_from_rtp={} [{},{}]",
+                                    rtp_packets, raw_ts, unwrapped_rtp, position_from_rtp, current_start, current_end
+                                );
+                            }
+                        } else {
+                            if !ref_anchored_this_gen {
+                                ref_unwrapped_rtp = unwrapped_rtp;
+                                ref_real_ms = current_start;
+                                ref_anchored_this_gen = true;
+                                state_rtp.set_playback_position(current_start);
+                                log::info!(
+                                    "[timeline] RTP re-anchor: packet #{} position_from_rtp={} out of [{},{}], using ref",
+                                    rtp_packets, position_from_rtp, current_start, current_end
+                                );
+                            } else {
+                                let clamped = position_from_ref.min(current_end).max(current_start);
+                                state_rtp.set_playback_position(clamped);
+                            }
+                        }
                     }
 
                     if rtp_packets <= 3 || rtp_packets % 300 == 0 {

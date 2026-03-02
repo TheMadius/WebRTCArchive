@@ -101,7 +101,7 @@ pub async fn run_archive_loop(
                             }
                         }
                         state.set_playback_paused();
-                        log::info!("Pause: stop_stream sent, position frozen");
+                        log::info!("Pause: stop_stream sent; timeline always uses RTP position (last received)");
                     }
                     ArchiveCommand::Play => {
                         let req = play_stream();
