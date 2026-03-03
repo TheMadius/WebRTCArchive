@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -9,7 +8,6 @@ use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_HEVC};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::dtls_transport::dtls_role::DTLSRole;
-use webrtc::ice::agent::agent_config::IpFilterFn;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::ice::mdns::MulticastDnsMode;
@@ -160,19 +158,12 @@ pub async fn build_offer_h264_h265(
     se.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
     se.set_host_acceptance_min_wait(Some(Duration::from_millis(0)));
     // Клиент всегда инициирует DTLS (отправляет ClientHello), не ждёт инициативы от сервера — как в WHEP/плеере.
+    //
+    // Раньше здесь был IpFilter, который оставлял только локальные кандидаты с IP, равным IP сервера.
+    // Это работало, когда плеер запускался прямо на том же хосте, что и SFU, но ломало подключение
+    // с удалённой машины (локальные кандидаты отфильтровывались, пар не оставалось, ICE застревал в Checking).
+    // Сейчас не фильтруем IP вообще — оставляем выбор рабочей пары самому ICE-агенту.
     se.set_answering_dtls_role(DTLSRole::Client)?;
-    // Чтобы ICE не выбирал docker-интерфейсы (172.x) и ходил прямо к SFU по тому же IP,
-    // фильтруем локальные кандидаты по IP сервера, если он известен.
-    if let Some(host) = server_host {
-        if let Ok(server_ip) = host.parse::<IpAddr>() {
-            let filter: IpFilterFn = Box::new(move |ip| ip == server_ip);
-            se.set_ip_filter(filter);
-            log::info!(
-                "ICE: restricting local candidates to IP {} (match SFU), избегаем 172.x docker-интерфейсов",
-                server_ip
-            );
-        }
-    }
 
     let api = APIBuilder::new()
         .with_setting_engine(se)
