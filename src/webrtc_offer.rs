@@ -20,7 +20,7 @@ use webrtc::rtp_transceiver::{RTCPFeedback, RTCRtpTransceiverInit};
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 
 use crate::app_state::ArchiveState;
-use crate::video_decoder::{SharedFrame, VideoDecoder};
+use crate::video_decoder::{SharedFrame, VideoCodecKind, VideoDecoder};
 
 pub struct BuiltOffer {
     pub pc: Arc<webrtc::peer_connection::RTCPeerConnection>,
@@ -297,6 +297,16 @@ pub async fn build_offer_h264_h265(
         if track.kind() != RTPCodecType::Video {
             return Box::pin(async {});
         }
+        // Определяем тип кодека по mime_type, чтобы выбрать H.264 или H.265 декодер.
+        let codec_params = track.codec();
+        let mime_lower = codec_params.capability.mime_type.to_ascii_lowercase();
+        let decoder_kind = if mime_lower.contains("h265") || mime_lower.contains("hevc") {
+            log::info!("[video] using H.265/HEVC decoder for mime_type={}", codec_params.capability.mime_type);
+            VideoCodecKind::H265
+        } else {
+            log::info!("[video] using H.264 decoder for mime_type={}", codec_params.capability.mime_type);
+            VideoCodecKind::H264
+        };
         let frame_buf = frame_for_track.clone();
         let notify_new_frame = frame_updated_tx.clone();
         let track = Arc::clone(&track);
@@ -420,7 +430,7 @@ pub async fn build_offer_h264_h265(
 
         // Поток 2: приём payload из канала, декодирование, запись кадра в shared_frame.
         std::thread::spawn(move || {
-            let mut decoder = match VideoDecoder::new() {
+            let mut decoder = match VideoDecoder::new(decoder_kind) {
                 Ok(d) => d,
                 Err(e) => {
                     log::error!("[video] Failed to create decoder: {:?}", e);
