@@ -75,9 +75,12 @@ impl MainWindow {
             for (i, chunk) in src.chunks_exact(3).enumerate() {
                 let j = i * 4;
                 if j + 4 <= data.len() {
-                    data[j] = chunk[0];
-                    data[j + 1] = chunk[1];
-                    data[j + 2] = chunk[2];
+                    // Cairo Format::Rgb24 использует 32 бита на пиксель в порядке 0x00RRGGBB (на
+                    // little-endian в памяти это B,G,R,0). Наш кадр в RGB24 (R,G,B), поэтому
+                    // раскладываем как B,G,R,0.
+                    data[j] = chunk[2];       // B
+                    data[j + 1] = chunk[1];   // G
+                    data[j + 2] = chunk[0];   // R
                     data[j + 3] = 0;
                 }
             }

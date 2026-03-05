@@ -297,22 +297,13 @@ pub async fn build_offer_h264_h265(
         if track.kind() != RTPCodecType::Video {
             return Box::pin(async {});
         }
-        // Определяем тип кодека по mime_type, чтобы выбрать H.264 или H.265 декодер.
-        let codec_params = track.codec();
-        let mime_lower = codec_params.capability.mime_type.to_ascii_lowercase();
-        let decoder_kind = if mime_lower.contains("h265") || mime_lower.contains("hevc") {
-            log::info!("[video] using H.265/HEVC decoder for mime_type={}", codec_params.capability.mime_type);
-            VideoCodecKind::H265
-        } else {
-            log::info!("[video] using H.264 decoder for mime_type={}", codec_params.capability.mime_type);
-            VideoCodecKind::H264
-        };
         let frame_buf = frame_for_track.clone();
         let notify_new_frame = frame_updated_tx.clone();
         let track = Arc::clone(&track);
 
         // Буфер 8 пакетов: при кратковременных задержках декодера читатель не блокируется сразу — меньше «подвисаний».
-        let (payload_tx, payload_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
+        // Передаём вместе с payload и RTP payload_type, чтобы по нему выбирать нужный декодер (H.264/H.265).
+        let (payload_tx, payload_rx) = std::sync::mpsc::sync_channel::<(u8, Vec<u8>)>(8);
 
         // Поток 1: чтение RTP, разворот timestamp (32-bit wrap), рекомендательная позиция в state, отправка payload в канал.
         let track_reader = Arc::clone(&track);
@@ -417,9 +408,17 @@ pub async fn build_offer_h264_h265(
                     }
 
                     if rtp_packets <= 3 || rtp_packets % 300 == 0 {
-                        log::info!("[video] RTP reader: packet #{} ({} bytes) -> channel", rtp_packets, pkt.payload.len());
+                        log::info!(
+                            "[video] RTP reader: packet #{} pt={} ({} bytes) -> channel",
+                            rtp_packets,
+                            pkt.header.payload_type,
+                            pkt.payload.len()
+                        );
                     }
-                    if payload_tx_reader.send(pkt.payload.to_vec()).is_err() {
+                    if payload_tx_reader
+                        .send((pkt.header.payload_type, pkt.payload.to_vec()))
+                        .is_err()
+                    {
                         log::info!("[video] RTP reader loop ended after {} packets (channel closed)", rtp_packets);
                         break;
                     }
@@ -428,15 +427,13 @@ pub async fn build_offer_h264_h265(
             log::info!("[video] RTP reader loop ended, total packets received={}", rtp_packets);
         });
 
-        // Поток 2: приём payload из канала, декодирование, запись кадра в shared_frame.
+        // Поток 2: приём payload из канала, выбор декодера по payload_type, запись кадра в shared_frame.
         std::thread::spawn(move || {
-            let mut decoder = match VideoDecoder::new(decoder_kind) {
-                Ok(d) => d,
-                Err(e) => {
-                    log::error!("[video] Failed to create decoder: {:?}", e);
-                    return;
-                }
-            };
+            let mut decoder: Option<VideoDecoder> = None;
+            let mut current_kind: Option<VideoCodecKind> = None;
+            let mut last_pt: Option<u8> = None;
+
+            log::info!("[video] Decode loop started for track ssrc={}", track.ssrc());
             log::info!("[video] Decode loop started for track ssrc={}", track.ssrc());
             let mut frame_count: u64 = 0;
             let mut frames_in_this_sec: u64 = 0;
@@ -444,8 +441,57 @@ pub async fn build_offer_h264_h265(
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            while let Ok(payload) = payload_rx.recv() {
-                if let Ok(Some(decoded)) = decoder.push_payload(&payload) {
+            while let Ok((pt, payload)) = payload_rx.recv() {
+                // По payload_type выбираем нужный декодер. PT 102/103 задаются при регистрации кодеков
+                // в MediaEngine (H.264/H.265). Если сервер переключает кодек внутри одного трека,
+                // мы автоматически пересоздаём декодер под новый PT.
+                let wanted_kind = match pt {
+                    102 => VideoCodecKind::H264,
+                    103 => VideoCodecKind::H265,
+                    other => {
+                        log::warn!("[video] unknown payload_type {} (expected 102=H264 or 103=H265), dropping packet", other);
+                        continue;
+                    }
+                };
+
+                // Если payload_type изменился — всегда пересоздаём декодер и сбрасываем состояние,
+                // чтобы не тянуть "хвост" от предыдущего кодека/фрагмента.
+                if last_pt != Some(pt) {
+                    log::info!(
+                        "[video] RTP payload_type switch: last_pt={:?} -> {}, resetting decoder state",
+                        last_pt,
+                        pt
+                    );
+                    last_pt = Some(pt);
+                    decoder = None;
+                    current_kind = None;
+                }
+
+                if current_kind != Some(wanted_kind) {
+                    log::info!(
+                        "[video] switching decoder to {:?} for payload_type={}",
+                        wanted_kind,
+                        pt
+                    );
+                    match VideoDecoder::new(wanted_kind) {
+                        Ok(d) => {
+                            decoder = Some(d);
+                            current_kind = Some(wanted_kind);
+                        }
+                        Err(e) => {
+                            log::error!("[video] Failed to create decoder for {:?}: {:?}", wanted_kind, e);
+                            decoder = None;
+                            current_kind = None;
+                            continue;
+                        }
+                    }
+                }
+
+                let Some(dec) = decoder.as_mut() else {
+                    continue;
+                };
+
+                if let Ok(Some(decoded)) = dec.push_payload(&payload) {
                     frame_count += 1;
                     frames_in_this_sec += 1;
                     let w = decoded.width;

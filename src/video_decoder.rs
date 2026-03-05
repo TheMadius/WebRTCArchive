@@ -23,7 +23,7 @@ pub struct DecodedFrame {
 }
 
 /// Тип видеокодека потока.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VideoCodecKind {
     H264,
     H265,
