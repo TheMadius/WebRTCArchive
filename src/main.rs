@@ -13,10 +13,21 @@ use config::AppConfig;
 use video_decoder::SharedFrame;
 use gtk4::prelude::*;
 use gtk4::Application;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use ui::MainWindow;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+
+/// Пытается разименовать hostname (evs.eltex.loc) в IP-адрес, используя системный DNS.
+fn resolve_host_to_ip(host: &str) -> Option<IpAddr> {
+    // Порт не важен, берём 0; интересует только IP-часть.
+    let addrs = (host, 0).to_socket_addrs().ok()?;
+    for addr in addrs {
+        return Some(addr.ip());
+    }
+    None
+}
 
 fn main() -> Result<()> {
     env_logger::init();
@@ -108,7 +119,79 @@ fn main() -> Result<()> {
                 log::warn!("Failed to write answer_last.sdp: {:?}", e);
             }
 
-            let answer_sdp = answer.sdp;
+            // Разименовываем hostname в ICE-кандидатах (evs.eltex.loc -> IP), т.к. webrtc-rs ICE
+            // ожидает IP-адреса в полях кандидатов.
+            let raw_answer_sdp = answer.sdp;
+            let mut answer_sdp = String::new();
+            for line in raw_answer_sdp.lines() {
+                let trimmed = line.trim_start();
+                if let Some(rest) = trimmed.strip_prefix("a=candidate:") {
+                    let parts: Vec<&str> = rest.split_whitespace().collect();
+                    if parts.len() >= 6 {
+                        let foundation = parts[0];
+                        let component = parts[1];
+                        let transport = parts[2];
+                        let priority = parts[3];
+                        let addr = parts[4];
+                        let port = parts[5];
+                        let tail = &parts[6..];
+
+                        let ip = match addr.parse::<IpAddr>() {
+                            Ok(ip) => {
+                                log::info!(
+                                    "Using IP ICE candidate from answer SDP: {}",
+                                    line.trim()
+                                );
+                                Some(ip)
+                            }
+                            Err(_) => {
+                                match resolve_host_to_ip(addr) {
+                                    Some(ip) => {
+                                        log::info!(
+                                            "Resolved ICE candidate host {} -> {}",
+                                            addr,
+                                            ip
+                                        );
+                                        Some(ip)
+                                    }
+                                    None => {
+                                        log::warn!(
+                                            "Failed to resolve ICE candidate host {}, dropping candidate: {}",
+                                            addr,
+                                            line.trim()
+                                        );
+                                        None
+                                    }
+                                }
+                            }
+                        };
+
+                        if let Some(ip) = ip {
+                            let mut new_line = format!(
+                                "a=candidate:{} {} {} {} {} {}",
+                                foundation, component, transport, priority, ip, port
+                            );
+                            for t in tail {
+                                new_line.push(' ');
+                                new_line.push_str(t);
+                            }
+                            answer_sdp.push_str(&new_line);
+                            answer_sdp.push('\n');
+                        }
+                        continue;
+                    } else {
+                        log::warn!(
+                            "Cannot parse ICE candidate line in answer SDP, dropping: {}",
+                            line.trim()
+                        );
+                        continue;
+                    }
+                }
+                // Все остальные строки копируем как есть.
+                answer_sdp.push_str(line);
+                answer_sdp.push('\n');
+            }
+
             let remote = match webrtc::peer_connection::sdp::session_description::RTCSessionDescription::answer(answer_sdp.clone()) {
                 Ok(r) => r,
                 Err(err) => {
@@ -124,6 +207,29 @@ fn main() -> Result<()> {
 
                 // Прямое подключение к кандидату из answer: берём host из URL, порт из a=candidate.
                 if let Some(host) = webrtc_client::host_from_webrtc_url(&webrtc_url) {
+                    let host_ip = match host.parse::<IpAddr>() {
+                        Ok(ip) => Some(ip),
+                        Err(_) => {
+                            let resolved = resolve_host_to_ip(&host);
+                            match resolved {
+                                Some(ip) => {
+                                    log::info!(
+                                        "Resolved webrtc_url host {} -> {} for explicit ICE candidate",
+                                        host,
+                                        ip
+                                    );
+                                    Some(ip)
+                                }
+                                None => {
+                                    log::warn!(
+                                        "webrtc_url host is not an IP and cannot be resolved ({}), skipping explicit host ICE candidate",
+                                        host
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                    };
                     if let Some(line) = answer_sdp
                         .lines()
                         .find(|l| l.trim_start().starts_with("a=candidate:"))
@@ -132,6 +238,10 @@ fn main() -> Result<()> {
                         if let Some(rest) = trimmed.strip_prefix("a=candidate:") {
                             let parts: Vec<&str> = rest.split_whitespace().collect();
                             if parts.len() >= 6 {
+                                let Some(ip) = host_ip else {
+                                    // Нет IP — пропускаем добавление ручного кандидата.
+                                    return;
+                                };
                                 let foundation = parts[0];
                                 let component = parts[1];
                                 let transport = parts[2];
@@ -139,7 +249,7 @@ fn main() -> Result<()> {
                                 let port = parts[5];
                                 let candidate_str = format!(
                                     "candidate:{} {} {} {} {} {} typ host",
-                                    foundation, component, transport, priority, host, port
+                                    foundation, component, transport, priority, ip, port
                                 );
                                 log::info!(
                                     "Adding explicit remote ICE candidate from answer: {}",

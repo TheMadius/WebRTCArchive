@@ -1,6 +1,6 @@
 //! Цикл управления архивом: приём/отправка по Data Channel, пополнение буфера за 2 сек до конца.
 
-use crate::app_state::{ArchiveCommand, ArchiveState};
+use crate::app_state::{ArchiveCommand, ArchiveState, MetaObject};
 use crate::archive_protocol::{
     get_archive_fragment, get_ranges, drop_buffer, play_stream, stop_stream, set_speed,
     ArchiveFragmentResponseData, ServerMessage, RangesResponseData,
@@ -132,8 +132,49 @@ pub async fn run_archive_loop(
                 }
             }
             Some(json_str) = msg_rx.recv() => {
-                // Мета приходит на каждый кадр по DC — не парсим и не логируем, чтобы не нагружать.
+                // Мета приходит часто: парсим только нужную часть (objects.points) и обновляем state.
                 if json_str.contains("\"type\":\"meta\"") {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                        let mut objects: Vec<MetaObject> = Vec::new();
+                        let arr_opt = v
+                            .get("data")
+                            .and_then(|d| d.get("motionModel"))
+                            .and_then(|m| m.get("objects"))
+                            .and_then(|o| o.as_array());
+                        if let Some(arr) = arr_opt {
+                            for item in arr {
+                                let id = item
+                                    .get("id")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                let kind = item
+                                    .get("type")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("OBJ")
+                                    .to_string();
+                                let points = item.get("points");
+                                let x = points
+                                    .and_then(|p| p.get("x"))
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(0.0);
+                                let y = points
+                                    .and_then(|p| p.get("y"))
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(0.0);
+                                let w = points
+                                    .and_then(|p| p.get("w"))
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(0.0);
+                                let h = points
+                                    .and_then(|p| p.get("h"))
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(0.0);
+                                objects.push(MetaObject { id, kind, x, y, w, h });
+                            }
+                        }
+                        state.set_meta_objects(objects);
+                    }
                     continue;
                 }
                 log::info!(

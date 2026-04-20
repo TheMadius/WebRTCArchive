@@ -42,6 +42,7 @@ impl MainWindow {
 
         let frame_for_draw = Arc::clone(&shared_frame);
         let video_view_draw = Arc::clone(&video_view);
+        let state_for_draw = Arc::clone(&state);
         video_area.set_draw_func(move |_area, cr, width, height| {
             let area_w = width as f64;
             let area_h = height as f64;
@@ -124,6 +125,36 @@ impl MainWindow {
             cr.scale(scale_x, scale_y);
             cr.set_source_surface(&surface, 0.0, 0.0).ok();
             cr.paint().ok();
+
+            // Оверлей метаданных (motionModel.objects): нормализованные координаты в системе кадра.
+            let objects = state_for_draw.get_meta_objects();
+            if !objects.is_empty() {
+                for obj in objects {
+                    let ox = (obj.x * sw).clamp(0.0, sw);
+                    let oy = (obj.y * sh).clamp(0.0, sh);
+                    let ow = (obj.w * sw).clamp(0.0, sw);
+                    let oh = (obj.h * sh).clamp(0.0, sh);
+                    if ow <= 1.0 || oh <= 1.0 {
+                        continue;
+                    }
+                    // Жёлтая рамка + подпись типа объекта.
+                    cr.set_source_rgb(1.0, 0.9, 0.0);
+                    cr.set_line_width(2.0);
+                    cr.rectangle(ox, oy, ow, oh);
+                    cr.stroke().ok();
+
+                    cr.set_source_rgb(1.0, 0.9, 0.0);
+                    cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
+                    cr.set_font_size(18.0);
+                    let label = if obj.id.is_empty() {
+                        obj.kind
+                    } else {
+                        format!("{}:{}", obj.kind, obj.id)
+                    };
+                    cr.move_to(ox + 2.0, (oy - 4.0).max(18.0));
+                    cr.show_text(&label).ok();
+                }
+            }
             cr.restore().ok();
         });
 

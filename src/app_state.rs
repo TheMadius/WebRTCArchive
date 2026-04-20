@@ -4,6 +4,20 @@ use crate::archive_protocol::TimeRange;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Объект детекции для оверлея поверх видео.
+#[derive(Debug, Clone)]
+pub struct MetaObject {
+    /// Идентификатор объекта (если пришёл от сервера).
+    pub id: String,
+    /// Тип объекта (например, MD).
+    pub kind: String,
+    /// Нормализованные координаты (0..1) относительно кадра.
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
 /// Команды от UI к WebRTC-потоку.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -27,6 +41,8 @@ pub enum ArchiveCommand {
 /// Состояние, доступное UI (ranges, текущая позиция для отрисовки).
 pub struct ArchiveState {
     pub ranges: std::sync::RwLock<Vec<TimeRange>>,
+    /// Последние объекты из сообщения meta (для отрисовки поверх текущего кадра).
+    pub meta_objects: std::sync::RwLock<Vec<MetaObject>>,
     /// Начало текущего воспроизводимого фрагмента (мс).
     pub playback_start_ms: AtomicU64,
     /// Конец текущего фрагмента (мс).
@@ -56,6 +72,7 @@ impl Default for ArchiveState {
     fn default() -> Self {
         Self {
             ranges: std::sync::RwLock::new(Vec::new()),
+            meta_objects: std::sync::RwLock::new(Vec::new()),
             playback_start_ms: AtomicU64::new(0),
             playback_end_ms: AtomicU64::new(0),
             playback_position_ms: AtomicU64::new(0),
@@ -182,6 +199,16 @@ impl VideoViewState {
 }
 
 impl ArchiveState {
+    pub fn set_meta_objects(&self, objects: Vec<MetaObject>) {
+        if let Ok(mut w) = self.meta_objects.write() {
+            *w = objects;
+        }
+    }
+
+    pub fn get_meta_objects(&self) -> Vec<MetaObject> {
+        self.meta_objects.read().map(|v| v.clone()).unwrap_or_default()
+    }
+
     pub fn playback_speed(&self) -> u8 {
         self.playback_speed.load(Ordering::Relaxed)
     }
